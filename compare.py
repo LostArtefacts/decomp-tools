@@ -56,6 +56,8 @@ def compiled_functions(symbols):
     # several objects define, the linker keeps the first copy.
     seen = set()
     for _, path in build.sources():
+        if os.path.basename(path).startswith(build.GLUE_PREFIX):
+            continue  # the DLL's own code
         obj = coff.Object(os.path.join(ROOT, path))
         for sym in obj.externals():
             if sym.section <= 0 or sym.name not in symbols or sym.name in seen:

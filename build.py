@@ -115,6 +115,11 @@ def tool(name, *args):
         sys.exit(code)
 
 
+def read_sizes():
+    with open("config/symbols.csv") as f:
+        return {s: int(r["size"] or 0) for r in csv.DictReader(f) for s in r["symbol"].split()}
+
+
 def read_symbols():
     with open("config/symbols.csv") as f:
         return {s: int(r["address"], 16) for r in csv.DictReader(f) for s in r["symbol"].split()}
@@ -259,13 +264,21 @@ def write_hooks(objs, symbols):
                     glue.add(s.name)
                 continue
             defined.add(s.name)
-            if obj.sections[s.section - 1].flags & coff.CODE:
+            # The DLL's own code is never a game function, even when it
+            # shares a name with one (Init).
+            if (obj.sections[s.section - 1].flags & coff.CODE
+                    and not os.path.basename(path).startswith(GLUE_PREFIX)):
                 code.add(s.name)
         for sec in obj.sections:
             called.update(obj.symbols[i].name for _, i, t in sec.relocs if t == coff.REL32)
     # Data that src/ defines, such as vtables, is never hooked. Functions
     # the linker folded into one share an address; one hook covers them.
-    hooks = sorted({symbols[n]: n for n in sorted(code & symbols.keys())}.items())
+    # A function shorter than the 5-byte jump isn't hooked either: the
+    # jump would overwrite the next one, so the original's copy runs.
+    sizes = read_sizes()
+    hookable = {n for n in code & symbols.keys() if not 0 < sizes.get(n, 5) < 5}
+    short = len(code & symbols.keys()) - len(hookable)
+    hooks = sorted({symbols[n]: n for n in sorted(hookable)}.items())
     # Imports the hook installer itself uses stay real imports: it runs
     # from DllMain and should not rely on the game's import table.
     external = {n: a for n, a in symbols.items()
@@ -291,7 +304,8 @@ def write_hooks(objs, symbols):
     coff.write_object(path, [(".rdata", coff.RDATA, bytes(table), table_relocs),
                              (".text", coff.TEXT, bytes(thunks), [])],
                       entry, [n for _, n in hooks], absolute)
-    print(f"{len(hooks)} hooked, {len(external)} used from the original")
+    print(f"{len(hooks)} hooked, {len(external)} used from the original"
+          + (f", {short} too short to hook" if short else ""))
     return path
 
 
