@@ -88,7 +88,8 @@ just tools-init hooks
 | `run [STEP...]` | run the patched game headless (`wait:S key:K hold:K:S shot:NAME`) |
 | `exe [STEP...]` | link the standalone `build/<name>.exe`; `FEAT=a,b` turns on features |
 | `compare-exe [-v]` | compare the standalone exe with the original, section by section |
-| `analyze` | analyze the original with headless Ghidra, seed `config/symbols.csv` |
+| `dxsdk INSTALLER` | install a DirectX SDK's headers and libraries into the prefix (`C:\dx5`) |
+| `analyze` | analyze the original with headless Ghidra, create the functions `config/symbols.csv` lists that it missed, seed `config/symbols.csv` |
 | `manifest [-n] [FILE]` | name `config/symbols.csv`'s rows from a TRX manifest |
 | `decompile [ADDR...]` | write Ghidra's pseudocode to `build/decomp/` |
 | `progress` | render `docs/progress.svg` |
@@ -142,6 +143,7 @@ puts it on `main` at the same commit.
 | `play.py` | runs the game under Xvfb, sends keys, takes screenshots |
 | `seed_symbols.py` | adds Ghidra's functions and the imports to `symbols.csv` |
 | `manifest.py` | names `symbols.csv`'s rows from a TRX manifest, with MSVC's C decorations |
+| `dxsdk.py` | unpacks a DirectX SDK download into the prefix |
 | `name.py` | names a row of `symbols.csv` |
 | `rename.py` | renames functions in the working tree or throughout history |
 | `render_progress.py` | draws the progress image |
@@ -236,7 +238,7 @@ The exe's map is `build/<name>_exe.map`, the DLL's `build/<name>.map`.
 
 - Python 3.11 or later (for `tomllib`), [just](https://github.com/casey/just)
   recent enough for the `[default]` attribute
-- Wine (32-bit), binutils (`objdump`)
+- Wine (32-bit), binutils (`objdump`), 7-Zip
 - For `run`: Xvfb, xdotool, ImageMagick and 32-bit Mesa OpenGL
 - The original toolchain in the Wine prefix (bring your own copies)
 - Ghidra, for analysis

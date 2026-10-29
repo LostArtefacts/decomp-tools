@@ -184,6 +184,8 @@ def main():
                 row["size"] = size
         else:
             counts["kept"] += 1
+            if not row["size"]:
+                row["size"] = size
     names = {}
     for addr, row in rows.items():
         for s in row["symbol"].split():

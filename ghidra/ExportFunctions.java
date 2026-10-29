@@ -15,7 +15,8 @@ public class ExportFunctions extends GhidraScript {
 		try (PrintWriter w = new PrintWriter(out, "UTF-8")) {
 			w.println("address,size,name,callers,callees");
 			for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
-				if (f.isThunk() || f.isExternal()) {
+				// Thunks stay: a function that only tail-calls another is one.
+				if (f.isExternal()) {
 					continue;
 				}
 				w.printf("0x%08x,%d,%s,%d,%d%n",

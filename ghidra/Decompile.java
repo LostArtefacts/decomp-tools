@@ -33,7 +33,7 @@ public class Decompile extends GhidraScript {
 			}
 		} else {
 			for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
-				if (!f.isThunk() && !f.isExternal()) {
+				if (!f.isExternal()) {
 					funcs.add(f);
 				}
 			}

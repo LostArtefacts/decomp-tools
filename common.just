@@ -43,6 +43,10 @@ exe *steps: game
 compare-exe *args: _orig
     python3 tools/compare_exe.py "$@"
 
+# Install a DirectX SDK's headers and libraries from its INSTALLER into the prefix (C:\dx5)
+dxsdk installer:
+    python3 tools/dxsdk.py {{ quote(installer) }}
+
 # Analyze the original with headless Ghidra; add new functions to symbols.csv
 analyze: _orig
     tools/ghidra/analyze.sh

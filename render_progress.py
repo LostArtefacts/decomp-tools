@@ -97,8 +97,9 @@ def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None
         ))
     for f in functions:
         if not f.size:
-            print(f"warning: no size for {f.signature}", file=sys.stderr)
-    return sorted(functions, key=lambda f: f.offset)
+            print(f"warning: no size for {f.signature}, left out", file=sys.stderr)
+    # A function without a size has no area in the treemap.
+    return sorted((f for f in functions if f.size), key=lambda f: f.offset)
 
 
 DOCUMENT_MARGIN = Decimal(2)

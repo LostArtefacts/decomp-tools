@@ -15,7 +15,7 @@ decorated `__imp__` names from the SDK import libraries, so decompiled
 code calls through the game's own imports and `just compare` checks
 which import each call uses.
 
-Existing rows are never changed.
+Of existing rows, only an empty size is filled in, from Ghidra's.
 """
 import csv, glob, os, re, struct, subprocess, sys
 
@@ -82,10 +82,13 @@ def main():
     src = sys.argv[1] if len(sys.argv) > 1 else project.config["ghidra"]["functions"]
     path = "config/symbols.csv"
     rows = {int(r["address"], 16): r for r in csv.DictReader(open(path))}
-    added = 0
+    added = sized = 0
     for f in csv.DictReader(open(src)):
         addr = int(f["address"], 16)
         if addr in rows:
+            if not rows[addr]["size"]:
+                rows[addr]["size"] = f["size"]
+                sized += 1
             continue
         name = f["name"]
         if addr < GAME_END or name.startswith("FUN_"):
@@ -100,7 +103,8 @@ def main():
         if addr in rows:
             continue
         if name not in decorated:
-            print(f"warning: no import library symbol for {dll}!{name}", file=sys.stderr)
+            if decorated:
+                print(f"warning: no import library symbol for {dll}!{name}", file=sys.stderr)
             missing += 1
             continue
         rows[addr] = {"address": f"0x{addr:08x}", "size": "4", "name": name, "symbol": decorated[name]}
@@ -111,8 +115,9 @@ def main():
         w.writeheader()
         for addr in sorted(rows):
             w.writerow({k: rows[addr].get(k) or "" for k in w.fieldnames})
-    print(f"{added} functions and {added_imports} imports added to {path}, {len(rows)} rows"
-          + (f"; {missing} imports without a symbol" if missing else ""))
+    print(f"{added} functions and {added_imports} imports added to {path}, {sized} sized,"
+          f" {len(rows)} rows" + (f"; {missing} imports without a symbol" if missing else "")
+          + ("" if decorated else f" (no import libraries in {', '.join(LIBS)})"))
 
 
 if __name__ == "__main__":
