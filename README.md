@@ -182,6 +182,8 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `bin` | `C:\msvc5\bin` | where `cl.exe` and `link.exe` are, in the Wine prefix |
 | `include` | `C:\dx5\include`, `C:\msvc5\include` | `INCLUDE` |
 | `lib` | `C:\dx5\lib`, `C:\msvc5\lib` | `LIB`, in search order |
+| `ml` | `C:\masm611\bin\ML.EXE` | the assembler for `src/`'s `.s` and `.asm` files |
+| `asflags` | `/c /coff` | its flags |
 | `timeout` | `60` | seconds before a compile counts as hung |
 | `hook` | none | a Python file with the game's own build steps, see below |
 

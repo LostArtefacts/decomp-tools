@@ -48,6 +48,8 @@ DEFAULTS = {
         "lib": [r"C:\dx5\lib", r"C:\msvc5\lib"],
         "cflags": REQUIRED,
         "encoding": "cp1252",  # what src/'s UTF-8 is converted to for cl
+        "ml": r"C:\masm611\bin\ml.exe",  # the assembler for src/'s .s and .asm files
+        "asflags": ["/c", "/coff"],
         "timeout": 60,
         "hook": "",
     },

@@ -45,7 +45,8 @@ OBJ = "build/obj"  # the DLL's, which compare.py reads
 OBJ_EXE = EXE_CONFIG["obj_dir"]  # the vanilla standalone exe's
 CONVERTED = "build/src"  # src/ converted to build.encoding
 ENCODING = BUILD["encoding"]
-SOURCE_EXTS = (".c", ".cpp")  # what gets compiled; headers and the rest are only converted
+SOURCE_EXTS = (".c", ".cpp", ".s", ".asm")  # what gets built; headers and the rest are only converted
+ASM_EXTS = (".s", ".asm")  # assembled with build.ml and build.asflags
 DLL = project.DLL
 EXE = project.EXE
 EXE_MAP = project.EXE_MAP
@@ -96,9 +97,10 @@ def win(path):
 
 
 def run_tool(name, *args):
-    """Runs an MSVC tool; returns its exit code and its output, without the
-    lines that only name the file."""
-    cmd = ["wine", BUILD["bin"] + "\\" + name + ".exe", "/nologo", *args]
+    """Runs an MSVC tool, or build.ml for "ml"; returns its exit code and
+    its output, without the lines that only name the file."""
+    exe = BUILD["ml"] if name == "ml" else BUILD["bin"] + "\\" + name + ".exe"
+    cmd = ["wine", exe, "/nologo", *args]
     try:
         r = subprocess.run(cmd, env=ENV, timeout=TIMEOUT, capture_output=True, text=True, errors="replace")
     except subprocess.TimeoutExpired:
@@ -199,14 +201,16 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
 
     def compile_one(job):
         src, obj, flags = job
-        return run_tool("cl", "/c", *flags, "/I" + win(CONVERTED), "/Fo" + win(obj),
-                        win(os.path.join(CONVERTED, os.path.relpath(src, "src"))))
+        converted = win(os.path.join(CONVERTED, os.path.relpath(src, "src")))
+        if src.lower().endswith(ASM_EXTS):
+            return run_tool("ml", *BUILD["asflags"], "/Fo" + win(obj), converted)
+        return run_tool("cl", "/c", *flags, "/I" + win(CONVERTED), "/Fo" + win(obj), converted)
 
     failed = 0
     with ThreadPoolExecutor(JOBS) as pool:
         # Results come back in source order, so the output reads as before.
         for (src, obj, flags), (code, out) in zip(stale, pool.map(compile_one, stale)):
-            print("cl", src)
+            print("ml" if src.lower().endswith(ASM_EXTS) else "cl", src)
             if out:
                 print(out)
             if code:
@@ -222,8 +226,8 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
 
 
 def sources(target=DLL, obj_dir=OBJ, feats=()):
-    """Yields (source, object) for each .c and .cpp in src/ that `target`
-    builds with the features `feats`."""
+    """Yields (source, object) for each .c, .cpp, .s and .asm in src/ that
+    `target` builds with the features `feats`."""
     skip = EXE_ONLY if target == DLL else DLL_ONLY
     unused = set().union(*(paths for f, paths in FEATURE_SOURCES.items() if f not in feats))
     found = (glob.glob(os.path.join(ROOT, "src/**/*" + ext), recursive=True) for ext in SOURCE_EXTS)
