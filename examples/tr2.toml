@@ -1,0 +1,28 @@
+# tr02: Tomb Raider II, the Steam release's Tomb2.exe (linked 1997-12-10)
+
+[game]
+name = "tomb2"
+title = "Tomb Raider II"
+window_title = "Tomb Raider II"
+dir = "orig/tomb2"
+exe = "Tomb2.exe"
+checksums = "orig/tomb2.sha1"
+original = "build/tomb2.exe"
+game_end = 0x459FF0  # the CRT starts at the entry point; set by `just analyze`
+
+[ghidra]
+project = "tomb2"
+
+[build]
+# TOMBRAID.DSP's release flags, without /Zi /Fr /YX /FD
+cflags = ["/G5", "/Zp1", "/W3", "/O2", "/DNDEBUG", "/DWIN32", "/D_WINDOWS"]
+
+[exe]
+defines = ["TR2_EXE=1"]
+# The original's import order is TOMBRAID.DSP's library order.
+libs = ["dxguid.lib", "dinput.lib", "dsound.lib", "ddraw.lib", "winmm.lib", "user32.lib",
+        "comctl32.lib", "advapi32.lib", "gdi32.lib", "winplay.lib", "ole32.lib", "libc.lib",
+        "kernel32.lib"]
+
+[symbols]
+manifest = "refs/trx/docs/symbols/tr2-steam.txt"
