@@ -73,7 +73,7 @@ DEFAULTS = {
         "progress": False,
     },
     "tools": {
-        "remote": "origin",  # where `just tools-push` pushes tools/' main
+        "remote": "git@github.com:LostArtefacts/decomp-tools.git",  # where `just tools-push` pushes
     },
 }
 

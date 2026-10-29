@@ -1,4 +1,4 @@
-# tr-decomp-tools
+# decomp-tools
 
 Tooling for matching decompilations of the Windows Tomb Raider games,
 Tomb Raider II to Chronicles, built with MSVC 5 and 6 under Wine, on
@@ -13,7 +13,7 @@ it with the original section by section. They also drive the game
 headless under Xvfb, analyze the original with headless Ghidra and name
 its functions from TRX's symbol manifests.
 
-They started as a fork of [decomp-tools](https://github.com/Cirno-Labs/decomp-tools),
+They started as a fork of [Cirno Labs' decomp-tools](https://github.com/Cirno-Labs/decomp-tools),
 the Touhou games' MSVC 7 tooling. The differences: C sources as well
 as C++, a configurable source encoding instead of Shift-JIS, MSVC 5/DX5
 defaults, an optional Rich header, MSVC 5 and 6's float constant names,
@@ -70,7 +70,7 @@ tools/        this repository
 repository:
 
 ```sh
-git submodule add ../tr-decomp-tools tools
+git submodule add https://github.com/LostArtefacts/decomp-tools.git tools
 cp tools/examples/tr2.toml project.toml   # then adapt it
 echo "import 'tools/common.just'" > justfile
 just tools-init hooks
@@ -107,21 +107,13 @@ next to it is used.
 | --- | --- |
 | `tools-init` | `git submodule update --init tools`, then puts `tools/` on a `main` branch at the recorded commit |
 | `tools-pull` | `git pull --ff-only` on `tools/`' `main` |
-| `tools-push` | `git push` of `tools/`' `main` to `tools.remote` (`origin`) |
+| `tools-push` | `git push` of `tools/`' `main` to `tools.remote`, `git@github.com:LostArtefacts/decomp-tools.git` |
 
 `tools/` is a checkout of this repository, so a change to the tools is
 a commit made inside `tools/` (`git -C tools commit`), pushed with
 `just tools-push`. The game repository then records the new commit
 with a commit of its own (`git add tools`). In the other games, run
 `just tools-pull` and commit the pointer the same way.
-
-The submodule's URL is relative, `../tr-decomp-tools`. It resolves
-against the game repository's remote or, without one, its directory,
-so the games and the tools can sit side by side on disk. A local
-checkout takes the pushes when it has
-`git config receive.denyCurrentBranch updateInstead`. Git refuses
-local submodule clones by default, so a local `submodule add` or
-`update --init` needs `git -c protocol.file.allow=always`.
 
 A fresh clone of a game needs `git clone --recursive`, or
 `git submodule update --init tools` after it: the justfile imports
@@ -221,7 +213,7 @@ The exe's map is `build/<name>_exe.map`, the DLL's `build/<name>.map`.
 | `symbols.import_libs` | `.wine/drive_c/msvc5/lib`, `.wine/drive_c/dx5/lib` | where `seed_symbols.py` looks up decorated import names |
 | `symbols.manifest` | none | the TRX manifest `manifest.py` reads by default |
 | `hooks.progress` | `false` | the pre-commit hook redraws `docs/progress.svg` and adds it |
-| `tools.remote` | `origin` | where `tools-push` pushes |
+| `tools.remote` | `git@github.com:LostArtefacts/decomp-tools.git` | where `tools-push` pushes, over SSH |
 
 ### The build hook
 

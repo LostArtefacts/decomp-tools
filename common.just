@@ -84,12 +84,12 @@ tools-init:
     git submodule update --init tools
     git -C tools switch -q -C main "$(git rev-parse :tools)"
 
-# Bring tools/ up to tr-decomp-tools' main; commit the new pointer afterwards
+# Bring tools/ up to decomp-tools' main; commit the new pointer afterwards
 tools-pull:
     git -C tools switch -q main
     git -C tools pull -q --ff-only
     git -C tools log -1 --oneline
 
-# Push the commits made in tools/ to tr-decomp-tools' main (tools.remote)
+# Push the commits made in tools/ to decomp-tools' main (tools.remote)
 tools-push:
     git -C tools push "$(python3 tools/project.py get tools.remote)" main
