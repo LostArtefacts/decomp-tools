@@ -12,7 +12,8 @@ config/symbols.csv, limited to the game code; their status from the build:
 - nonmatching: defined in src/, not matching yet
 - todo:        everything else
 
-Run it after a build (`just progress` does both).
+Run it after a build (`just progress` does both). It prints one line: a
+bar of the bytes matched, and how many functions and bytes match.
 
     render_progress.py --from-svg OLD [--root DIR] [OUTPUT]
 
@@ -751,7 +752,23 @@ class ProgressSVG(Container):
         )
 
 
+def summary(functions: list[Symbol], width: int) -> str:
+    """One line: a bar of the bytes matched, and the counts, no wider
+    than `width`."""
+    done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
+    total = sum(f.size for f in functions) or 1
+    size = sum(f.size for f in done)
+    tail = (f" {100 * size / total:.1f}%  {len(done)}/{len(functions)} functions  "
+            f"{size / 1000:.0f}k/{total / 1000:.0f}k bytes")
+    head = f"{project.config['game']['exe']}  "
+    bar = max(min(20, width - len(head) - len(tail)), 5)
+    full = round(bar * size / total)
+    return head + "\u2588" * full + "\u2591" * (bar - full) + tail
+
+
 def main() -> None:
+    import shutil
+
     args = sys.argv[1:]
     root, built_svg = ROOT, None
     while args[:1] in (["--from-svg"], ["--root"]):
@@ -765,9 +782,7 @@ def main() -> None:
     functions = collect_functions(root, built_svg)
     with open(output, "w") as handle:
         print(ProgressSVG(functions).render(), file=handle)
-    done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
-    print(f"{len(done)}/{len(functions)} functions, "
-          f"{sum(f.size for f in done)}/{sum(f.size for f in functions)} bytes; wrote {output}")
+    print(summary(functions, shutil.get_terminal_size((100, 24)).columns))
 
 
 if __name__ == "__main__":
