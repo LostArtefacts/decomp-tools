@@ -26,3 +26,8 @@ libs = ["dxguid.lib", "dinput.lib", "dsound.lib", "ddraw.lib", "winmm.lib", "use
 
 [symbols]
 manifest = "refs/trx/docs/symbols/tr2-steam.txt"
+
+[hooks]
+progress = true  # every commit redraws docs/progress.svg
+compare = true  # every compiled function matches the original
+one_function = true  # one newly matching function per commit

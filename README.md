@@ -93,7 +93,7 @@ just tools-init hooks
 | `manifest [-n] [FILE]` | name `config/symbols.csv`'s rows from a TRX manifest |
 | `decompile [ADDR...]` | write Ghidra's pseudocode to `build/decomp/` |
 | `progress` | render `docs/progress.svg` |
-| `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers, and with `hooks.progress` a progress image in every commit |
+| `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers, and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
 
 Compiles run on half the cores; `JOBS` overrides it. Ghidra is found
@@ -141,6 +141,7 @@ puts it on `main` at the same commit.
 | `render_progress.py` | draws the progress image |
 | `coff.py`, `rsrc.py`, `peinfo.py` | COFF objects, resources, PE and Rich header |
 | `ghidra/` | headless Ghidra: analysis, function export, decompilation |
+| `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 
 ## project.toml
@@ -213,7 +214,19 @@ The exe's map is `build/<name>_exe.map`, the DLL's `build/<name>.map`.
 | `symbols.import_libs` | `.wine/drive_c/msvc5/lib`, `.wine/drive_c/dx5/lib` | where `seed_symbols.py` looks up decorated import names |
 | `symbols.manifest` | none | the TRX manifest `manifest.py` reads by default |
 | `hooks.progress` | `false` | the pre-commit hook redraws `docs/progress.svg` and adds it |
+| `hooks.compare` | `false` | the pre-commit hook fails unless every compiled function matches the original byte for byte |
+| `hooks.one_function` | `false` | a commit makes at most one more function match, and then its subject is `Decompile NAME (0xADDRESS)`; needs `hooks.progress` |
 | `tools.remote` | `git@github.com:LostArtefacts/decomp-tools.git` | where `tools-push` pushes, over SSH |
+
+### The commit rules
+
+With `hooks.compare` or `hooks.one_function`, the pre-commit hook builds
+`src/` and runs the comparison (`gate.py`). `src/` and `config/` then
+may have no unstaged changes, so that what is built is what is
+committed. The functions that matched before are the ones HEAD's
+`docs/progress.svg` shows as matching. A commit that makes none match
+must not start with `Decompile `, except an amend that keeps the
+subject. `git commit --no-verify` skips the hooks.
 
 ### The build hook
 

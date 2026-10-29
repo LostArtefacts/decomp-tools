@@ -48,3 +48,9 @@ if errors:
     for e in errors:
         print(f"commit-msg: {e}", file=sys.stderr)
     sys.exit(1)
+
+# The game repository's own rules (tools/gate.py); not in tools/ itself.
+top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+gate = os.path.join(top, "tools", "gate.py")
+if os.path.exists(os.path.join(top, "project.toml")) and os.path.exists(gate):
+    sys.exit(subprocess.run([sys.executable, gate, "commit-msg", os.path.abspath(sys.argv[1])]).returncode)

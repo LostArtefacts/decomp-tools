@@ -70,7 +70,9 @@ DEFAULTS = {
         "manifest": "",  # a TRX symbol manifest that manifest.py names functions and globals from
     },
     "hooks": {
-        "progress": False,
+        "progress": False,  # pre-commit redraws docs/progress.svg
+        "compare": False,  # pre-commit fails unless every compiled function matches
+        "one_function": False,  # one newly matching function per commit, named in the subject
     },
     "tools": {
         "remote": "git@github.com:LostArtefacts/decomp-tools.git",  # where `just tools-push` pushes
