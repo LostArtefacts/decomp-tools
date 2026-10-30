@@ -1,6 +1,7 @@
 """Searches source variants of one function for a byte match.
 
     permute.py NAME [-j JOBS] [-t SECONDS] [-s SEED]
+    permute.py NAME --decls [-j JOBS] [--limit N]
 
 NAME must already be defined in src/ and build. The permuter takes its
 definition, applies random rewrites (reordering local declarations,
@@ -13,6 +14,13 @@ original, and the search climbs towards lower scores until it finds 0
 or runs out of time. A rewrite may change the meaning (swapping
 dependent statements, or && operands with side effects); a variant that
 matches byte for byte is proven correct by the match itself.
+
+--decls searches the local declarations only, exhaustively: every order
+of the declaration lines at the top of the function, times every order
+of the names within each line (sampled down to --limit candidates). VC5
+orders the terms of a sum, and often register choice, by a key built
+from the order its locals are declared in (all of them, used or not),
+which the random search rarely hits; this mode does.
 
 src/ is never written. The best variant goes to
 build/permute/NAME.c, and the change is printed as a diff to apply by
@@ -260,6 +268,39 @@ class Scorer:
         return len(ours) + len(self.orig_asm) - 2 * sum(b.size for b in sm.get_matching_blocks()) + len(diffs)
 
 
+DECL = re.compile(r"^(\s+)((?:const |unsigned |signed |static |register |struct |enum )*[A-Za-z_]\w*[\s\*]+)([^;=(){}]+);$")
+
+
+def declaration_orders(body, limit, rng):
+    """Every order of the top declaration lines and of the names in each,
+    the original first, sampled down to `limit`."""
+    import itertools
+    lines = body.split("\n")
+    top = []
+    for i, line in enumerate(lines[2:], 2):
+        if DECL.match(line):
+            top.append(i)
+        elif line.strip():
+            break
+    if not top or top != list(range(top[0], top[0] + len(top))):
+        return []
+    parts = []
+    for i in top:
+        m = DECL.match(lines[i])
+        parts.append((m.group(1), m.group(2).rstrip(), [n.strip() for n in m.group(3).split(",")]))
+    out = []
+    for order in itertools.permutations(range(len(parts))):
+        for names in itertools.product(*[list(itertools.permutations(parts[i][2])) for i in order]):
+            block = [f"{parts[i][0]}{parts[i][1]} {', '.join(ns)};".replace("* ", "*") if parts[i][1].endswith("*")
+                     else f"{parts[i][0]}{parts[i][1]} {', '.join(ns)};" for i, ns in zip(order, names)]
+            out.append("\n".join(lines[:top[0]] + block + lines[top[-1] + 1:]))
+            if len(out) > 200000:
+                break
+    if len(out) > limit:
+        out = [out[0]] + rng.sample(out[1:], limit - 1)
+    return out
+
+
 def compare_rows():
     import csv
     return list(csv.DictReader(open("config/symbols.csv")))
@@ -271,6 +312,8 @@ def main():
     ap.add_argument("-j", type=int, default=max(2, build.JOBS))
     ap.add_argument("-t", type=float, default=600)
     ap.add_argument("-s", type=int, default=None)
+    ap.add_argument("--decls", action="store_true", help="search declaration orders exhaustively")
+    ap.add_argument("--limit", type=int, default=3000, help="--decls: most candidates to try")
     args = ap.parse_args()
     build.compile_all()
     src, text, start, end = find_function(args.name)
@@ -288,6 +331,22 @@ def main():
     cur, cur_score = base, first
     deadline = time.time() + args.t
     tried = 0
+
+    if args.decls:
+        cands = declaration_orders(base, args.limit, rng)[1:]
+        print(f"{len(cands)} declaration orders to try", flush=True)
+        step = args.j * 4
+        with ThreadPoolExecutor(args.j) as pool:
+            for i in range(0, len(cands), step):
+                chunk = cands[i:i + step]
+                for body, sc in zip(chunk, pool.map(s.score, chunk)):
+                    tried += 1
+                    if sc is not None and sc < best_score:
+                        best, best_score = body, sc
+                        print(f"  {tried:5d} tries: score {sc}", flush=True)
+                if best_score == 0:
+                    break
+        deadline = 0
 
     def candidate(seed_body, r):
         body = seed_body

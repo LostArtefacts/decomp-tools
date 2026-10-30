@@ -126,7 +126,7 @@ just tools-init hooks
 | `decompile [ADDR...]` | write Ghidra's pseudocode to `build/decomp/` |
 | `probe [-j N]` | compile the reference source tree and score each of its functions against the original |
 | `fn NAME [-d\|-g\|-a]`, `fn --next [N]` | one function: target file, the reference's definition and what `src/` lacks; its diff; Ghidra's version; what to do next |
-| `permute NAME [-j N] [-t S]` | search source variants of a function for a byte match |
+| `permute NAME [-j N] [-t S]`, `permute NAME --decls` | search source variants of a function for a byte match; `--decls` tries every order of its local declarations, which decides VC5's term and register order |
 | `progress` | render `docs/progress.svg` |
 | `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers (a `Decompile` subject may run over 50 for a long name), and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
