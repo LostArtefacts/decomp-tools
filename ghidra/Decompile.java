@@ -1,6 +1,7 @@
 // Writes Ghidra's decompilation of functions to <outdir>/<address>.c
-// Usage (post-script): -postScript Decompile.java <outdir> [address...]
-// With no addresses, every function is decompiled.
+// Usage (post-script): -postScript Decompile.java <outdir> [-nothunks] [address...]
+// With no addresses, every function is decompiled, without the thunks
+// after -nothunks.
 // @category decomp
 
 import java.io.File;
@@ -19,10 +20,12 @@ public class Decompile extends GhidraScript {
 		String[] args = getScriptArgs();
 		File out = new File(args[0]);
 		out.mkdirs();
+		boolean noThunks = args.length > 1 && args[1].equals("-nothunks");
+		int first = noThunks ? 2 : 1;
 
 		List<Function> funcs = new ArrayList<>();
-		if (args.length > 1) {
-			for (int i = 1; i < args.length; i++) {
+		if (args.length > first) {
+			for (int i = first; i < args.length; i++) {
 				String addr = args[i].replaceFirst("^0[xX]", "");
 				Function f = getFunctionAt(toAddr(addr));
 				if (f == null) {
@@ -33,7 +36,7 @@ public class Decompile extends GhidraScript {
 			}
 		} else {
 			for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
-				if (!f.isExternal()) {
+				if (!f.isExternal() && !(noThunks && f.isThunk())) {
 					funcs.add(f);
 				}
 			}
