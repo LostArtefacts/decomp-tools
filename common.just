@@ -60,6 +60,18 @@ manifest *args: _orig
 decompile *addrs:
     tools/ghidra/decompile.sh {{ addrs }}
 
+# Compile the reference source tree (reference.*) and score its functions against the original
+probe *args: _orig
+    python3 tools/probe.py {{ args }}
+
+# One function: where it goes, the reference's definition, -d its diff, -g Ghidra's; --next N what to do next
+fn *args: _orig
+    python3 tools/fn.py {{ args }}
+
+# Search source variants of NAME for a byte match (-j JOBS -t SECONDS)
+permute name *args: _orig
+    python3 tools/permute.py {{ name }} {{ args }}
+
 # Render docs/progress.svg from symbols.csv and the build
 progress: build _orig
     python3 tools/render_progress.py

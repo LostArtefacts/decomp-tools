@@ -78,6 +78,16 @@ DEFAULTS = {
         "one_function": False,  # one newly matching function per commit, named in the subject
         "no_comments": False,  # pre-commit fails on comments, tabs or CRs in staged src/ files
     },
+    "reference": {
+        "source": "",  # a reference source tree, such as the developers' own, for probe.py and fn.py
+        "prefer": [],  # its directories whose definitions fn.py shows first, as the closest to the target
+        "skip": [],  # its directories that are stale copies, left out of lookups
+        "layout": {},  # its top directories mapped to src/'s: {"GAME": "", "SPECIFIC": "specific"}
+        "dsp": "",  # the Visual C++ project file in source that probe.py builds
+        "dsp_config": "",  # the configuration probe.py builds, such as "TombRaid - Win32 Release"
+        "defines": [],  # extra cl flags for the reference, such as ["/DCODER=0"]
+        "probe": "build/probe.csv",  # where probe.py writes its results
+    },
     "tools": {
         "remote": "git@github.com:LostArtefacts/decomp-tools.git",  # where `just tools-push` pushes
     },

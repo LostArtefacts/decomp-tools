@@ -92,6 +92,9 @@ just tools-init hooks
 | `analyze` | analyze the original with headless Ghidra, create the functions `config/symbols.csv` lists that it missed, seed `config/symbols.csv` |
 | `manifest [-n] [FILE]` | name `config/symbols.csv`'s rows from a TRX manifest |
 | `decompile [ADDR...]` | write Ghidra's pseudocode to `build/decomp/` |
+| `probe [-j N]` | compile the reference source tree and score each of its functions against the original |
+| `fn NAME [-d\|-g\|-a]`, `fn --next [N]` | one function: target file, the reference's definition and what `src/` lacks; its diff; Ghidra's version; what to do next |
+| `permute NAME [-j N] [-t S]` | search source variants of a function for a byte match |
 | `progress` | render `docs/progress.svg` |
 | `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers, and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
@@ -141,6 +144,9 @@ puts it on `main` at the same commit.
 | `render_progress.py` | draws the progress image |
 | `coff.py`, `rsrc.py`, `peinfo.py` | COFF objects, resources, PE and Rich header |
 | `ghidra/` | headless Ghidra: analysis, function export, decompilation |
+| `probe.py` | compiles `reference.source` as its project file builds it and scores each function against the original |
+| `fn.py` | everything about one function in one call, and the order to do them in |
+| `permute.py` | searches rewrites of one function (declaration order, operand order, statement order, if/else) for a byte match, compiling each variant alone |
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 
@@ -209,6 +215,22 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `feature_sources` | `{}` | sources only the exe with a feature builds and links |
 
 The exe's map is `build/<name>_exe.map`, the DLL's `build/<name>.map`.
+
+### `[reference]`
+
+A reference source tree, such as the developers' own, which `probe.py`
+compiles and `fn.py` reads.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `source` | none | the tree, relative to the repository |
+| `prefer` | `[]` | its directories whose definitions `fn.py` shows first, as the closest to the target |
+| `skip` | `[]` | its directories of stale copies, left out of lookups |
+| `layout` | `{}` | its top directories mapped to `src/`'s, such as `{GAME = "", SPECIFIC = "specific"}` |
+| `dsp` | none | the Visual C++ project file `probe.py` builds |
+| `dsp_config` | none | the configuration it builds, such as `TombRaid - Win32 Release` |
+| `defines` | `[]` | extra `cl` flags for the reference |
+| `probe` | `build/probe.csv` | where `probe.py` writes its scores, which `fn.py` reads |
 
 ### `[symbols]`, `[hooks]`, `[tools]`
 
