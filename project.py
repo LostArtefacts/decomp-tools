@@ -39,6 +39,7 @@ DEFAULTS = {
     },
     "ghidra": {
         "path": "",  # the Ghidra installation; GHIDRA overrides it
+        "search": ["~/opt/ghidra_*"],  # globs searched for the newest installation without either
         "project": "",  # defaults to the original's file name without .exe
         "functions": "",  # defaults to build/functions_<project>.csv
     },
@@ -147,13 +148,12 @@ def get(key):
 
 
 def ghidra_home():
-    """The Ghidra installation: GHIDRA, ghidra.path, or the newest
-    ~/opt/ghidra_* or ~/data.local/work/ghidra_*."""
+    """The Ghidra installation: GHIDRA, ghidra.path, or the newest match
+    of ghidra.search."""
     path = os.environ.get("GHIDRA") or config["ghidra"]["path"]
     if path:
         return os.path.join(ROOT, os.path.expanduser(path))
-    found = sorted(glob.glob(os.path.expanduser("~/opt/ghidra_*"))
-                   + glob.glob(os.path.expanduser("~/data.local/work/ghidra_*")),
+    found = sorted((p for g in config["ghidra"]["search"] for p in glob.glob(os.path.expanduser(g))),
                    key=os.path.basename)
     if not found:
         sys.exit("no Ghidra: set GHIDRA or ghidra.path in project.toml")

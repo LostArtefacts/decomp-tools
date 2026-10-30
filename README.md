@@ -100,8 +100,8 @@ just tools-init hooks
 | `clean` | remove build outputs (keeps the Ghidra project) |
 
 Compiles run on half the cores; `JOBS` overrides it. Ghidra is found
-through `GHIDRA`, `ghidra.path` or the newest `~/opt/ghidra_*` or
-`~/data.local/work/ghidra_*`. Without a `java` on `PATH`, a `jdk-21*`
+through `GHIDRA`, `ghidra.path` or the newest match of `ghidra.search`
+(`~/opt/ghidra_*`). Without a `java` on `PATH`, a `jdk-21*`
 next to it is used.
 
 ### The submodule
@@ -176,6 +176,7 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `path` | none | the Ghidra installation; `GHIDRA` overrides it |
+| `search` | `["~/opt/ghidra_*"]` | globs searched for the newest installation when neither `GHIDRA` nor `path` is set |
 | `project` | `original`'s name without `.exe` | the Ghidra project in `build/ghidra/` |
 | `functions` | `build/functions_<project>.csv` | the exported function list |
 
