@@ -47,6 +47,12 @@ class Original:
         objs, fixups = le.LE(path).image()
         self.objs = [(base, bytes(m)) for base, m, _ in objs]
         self.fixups = {src: tgt for src, tgt, kind in fixups if kind != 8}
+        self.kinds = {src: kind for src, tgt, kind in fixups}
+
+    def width(self, addr):
+        """The size of the original's fixup at addr: 6 for a 16:32 pointer,
+        whose selector the loader fills in, otherwise 4."""
+        return 6 if self.kinds.get(addr) == 6 else 4
 
     def read(self, addr, n):
         for base, m in self.objs:
@@ -152,8 +158,8 @@ def compare_module(mod, orig, by_symbol):
             at = addr + f.offset - start
             off = f.offset - start
             fixed.update(range(at, at + f.size))
-            if f.size != 4:
-                r.errors.append(f"{f.size}-byte fixup at {at:#x}")
+            if f.size != orig.width(at):
+                r.errors.append(f"{f.size}-byte fixup at {at:#x}, the original's is {orig.width(at)}-byte")
                 continue
             inline, = struct.unpack_from("<i", ours, off)
             if f.rel:
@@ -256,8 +262,9 @@ def compare_module(mod, orig, by_symbol):
         for f in seg.fixups:
             at = base + f.offset
             fixed.update(range(at, at + f.size))
-            if f.size != 4 or f.rel:
-                r.errors.append(f"{f.size}-byte {'relative ' if f.rel else ''}fixup at {at:#x}")
+            if f.size != orig.width(at) or f.rel:
+                r.errors.append(f"{f.size}-byte {'relative ' if f.rel else ''}fixup at {at:#x}, "
+                                f"the original's is {orig.width(at)}-byte")
                 continue
             if at not in orig.fixups:
                 r.errors.append(f"fixup at {at:#x}, the original has none")
