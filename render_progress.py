@@ -20,11 +20,20 @@ bar of the bytes matched, and how many functions and bytes match.
 renders without a build instead: whether each function was built and
 matched comes from OLD, an earlier rendering, and the names from DIR's
 config/symbols.csv. tools/rename.py uses it to redraw past commits.
+
+With game.format = "le", it brings the build up to date first, and
+also counts the data segments that match. A function without a size in
+symbols.csv takes the one in build/functions.csv, from `just analyze`.
+One with size 0 shares its code with another, as wcc386 does for
+identical functions; it counts as a function but takes no space in the
+treemap.
 """
 import csv
+import glob
 import html
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -39,6 +48,10 @@ from project import GAME_END
 
 ROOT = project.ROOT
 TITLE = project.config["game"]["title"]
+LE = project.FORMAT == "le"
+ORDER_HEADER = "progress by function order:" if LE else "progress according to the physical function order:"
+SIZE_HEADER = "progress by function size:" if LE else "progress according to the function sizes:"
+DATA_STATS: dict[str, tuple[int, int]] = {}
 
 
 class SymbolStatus(StrEnum):
@@ -70,14 +83,50 @@ def built_from_svg(path: str) -> dict[int, bool | None]:
     return built
 
 
+def compare_built_le(root: str) -> dict[int, bool]:
+    """Whether each compiled function matches, by address, from the LE
+    backend's objects; the data segments go to DATA_STATS."""
+    import compare_le, omf
+    orig = compare_le.Original(os.path.join(root, compare_le.EXE))
+    with open(os.path.join(root, "config/symbols.csv")) as f:
+        by_symbol = {r["symbol"]: r for r in csv.DictReader(f) if r["symbol"]}
+    built: dict[int, bool] = {}
+    data = [0, 0]
+    for path in sorted(glob.glob(os.path.join(root, "build/obj/*.obj"))):
+        for mod in omf.modules(path):
+            for r in compare_le.compare_module(mod, orig, by_symbol)[0]:
+                if getattr(r, "data", False):
+                    data[0] += r.ok()
+                    data[1] += 1
+                elif r.addr is not None and not r.warning:
+                    built[r.addr] = built.get(r.addr, True) and r.ok()
+    DATA_STATS[root] = (data[0], data[1])
+    return built
+
+
 def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None = None) -> list[Symbol]:
     with open(os.path.join(root, "config/symbols.csv")) as f:
         rows = [r for r in csv.DictReader(f) if int(r["address"], 16) < GAME_END]
-    if built_svg is None:
+    if built_svg is None and LE:
+        if os.path.abspath(root) == ROOT:
+            subprocess.run([sys.executable, os.path.join(ROOT, "tools/build.py")], check=True,
+                           stdout=subprocess.DEVNULL)
+        built_le = compare_built_le(root)
+    elif built_svg is None:
         built = {name: same for name, same, *_ in compare.results(compare.read_symbols())}
+    if LE:
+        sizes = {}
+        found = os.path.join(root, project.FUNCTIONS)
+        if os.path.exists(found):
+            with open(found) as f:
+                sizes = {int(r["address"], 16): r["size"] for r in csv.DictReader(f)}
+        for row in rows:
+            row["size"] = row["size"] or sizes.get(int(row["address"], 16), "")
     functions = []
     for row in rows:
-        if built_svg is None:
+        if built_svg is None and LE:
+            same = built_le.get(int(row["address"], 16))
+        elif built_svg is None:
             symbols = [s for s in row["symbol"].split() if s in built]
             same = all(built[s] for s in symbols) if symbols else None
         else:
@@ -96,6 +145,11 @@ def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None
             size=int(row["size"] or 0),
             status=status,
         ))
+    if LE:
+        for f, row in zip(functions, rows):
+            if not row["size"]:
+                print(f"warning: no size for {f.signature}", file=sys.stderr)
+        return sorted(functions, key=lambda f: f.offset)
     for f in functions:
         if not f.size:
             print(f"warning: no size for {f.signature}, left out", file=sys.stderr)
@@ -502,7 +556,9 @@ class FunctionTreeGrid(Container):
         )
 
         for result in squarify(
-            all_functions, key=lambda function: Decimal(function.size), box=box
+            [function for function in all_functions if function.size],
+            key=lambda function: Decimal(function.size),
+            box=box,
         ):
             result.x2 = max(ZERO, result.x2 - GRID_SQUARE_MARGIN)
             result.y2 = max(ZERO, result.y2 - GRID_SQUARE_MARGIN)
@@ -667,13 +723,13 @@ class ProgressSVG(Container):
         y = ZERO
 
         section1 = GridSection(
-            header=f"{TITLE} progress according to the physical function order:",
+            header=f"{TITLE} {ORDER_HEADER}",
             all_functions=all_functions,
             mode=SumMode.COUNT,
         )
 
         section2 = GridSection(
-            header=f"{TITLE} progress according to the function sizes:",
+            header=f"{TITLE} {SIZE_HEADER}",
             all_functions=all_functions,
             mode=SumMode.BYTES,
         )
@@ -752,7 +808,7 @@ class ProgressSVG(Container):
         )
 
 
-def summary(functions: list[Symbol], width: int) -> str:
+def summary(functions: list[Symbol], width: int, data: tuple[int, int] | None = None) -> str:
     """One line: a bar of the bytes matched, and the counts, no wider
     than `width`."""
     done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
@@ -760,7 +816,9 @@ def summary(functions: list[Symbol], width: int) -> str:
     size = sum(f.size for f in done)
     tail = (f" {100 * size / total:.1f}%  {len(done)}/{len(functions)} functions  "
             f"{size / 1000:.0f}k/{total / 1000:.0f}k bytes")
-    head = f"{project.config['game']['exe']}  "
+    if data:
+        tail += f"  {data[0]}/{data[1]} data"
+    head = f"{TITLE if LE else project.config['game']['exe']}  "
     bar = max(min(20, width - len(head) - len(tail)), 5)
     full = round(bar * size / total)
     return head + "\u2588" * full + "\u2591" * (bar - full) + tail
@@ -782,7 +840,7 @@ def main() -> None:
     functions = collect_functions(root, built_svg)
     with open(output, "w") as handle:
         print(ProgressSVG(functions).render(), file=handle)
-    print(summary(functions, shutil.get_terminal_size((100, 24)).columns))
+    print(summary(functions, shutil.get_terminal_size((100, 24)).columns, DATA_STATS.get(root)))
 
 
 if __name__ == "__main__":

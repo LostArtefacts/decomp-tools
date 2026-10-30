@@ -7,6 +7,8 @@ Relocations whose target has a known address (symbols.csv, or the same
 function) are filled in and compared. The others are masked in the code;
 when they point at data the object defines, such as float constants and
 string literals, that data is compared with what the original points at.
+
+With game.format = "le", compare_le.py compares instead.
 """
 import csv, os, re, subprocess, sys, tempfile
 
@@ -146,6 +148,9 @@ def results(symbols):
 
 
 def main():
+    if project.FORMAT == "le":
+        import compare_le
+        return compare_le.main()
     os.chdir(ROOT)
     symbols = read_symbols()
     show = set(sys.argv[1:])

@@ -4,7 +4,8 @@
     build.py exe    the standalone game, build/<name>.exe
 
 <name> is game.name in project.toml, which also gives the flags and
-libraries below.
+libraries below. With build.toolchain = "watcom", build_watcom.py
+builds instead.
 
 Every function in config/symbols.csv that src/ defines is hooked: the DLL
 overwrites the original function with a jump to the new one. Every other
@@ -384,6 +385,9 @@ def copy_header_fields(src, dst):
 
 
 def main():
+    if project.TOOLCHAIN == "watcom":
+        import build_watcom
+        return build_watcom.main()
     os.chdir(ROOT)
     if sys.argv[1:] == ["exe"]:
         feats = features()
