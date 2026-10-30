@@ -89,7 +89,11 @@ on the host (see `[build]`). Its standalone exe is
 which wlink links from `build/obj/` and the parts of the original
 `src/` does not provide yet: `link_le.py` cuts those out of the user's
 original into generated OMF objects in `build/link/`, with the
-original's fixups, so nothing of the original is tracked. `just exe`
+original's fixups, so nothing of the original is tracked. The C
+library is not cut out: the Watcom library modules `[link]` names are
+extracted from the user's own Watcom libraries into `build/lib/` and
+placed like modules of `src/`, at their original addresses and in the
+original's order, so the exe links Watcom's own code. `just exe`
 copies it into `build/game/` next to `game.hooked` as `STANDALN.EXE`,
 and `play.py --standalone` runs it in DOSBox.
 
@@ -289,6 +293,22 @@ newest match of each first. `encoding`, `crlf`, `bin`, `include`,
 | `feature_sources` | `{}` | sources only the exe with a feature builds and links |
 
 The exe's map is `build/<name>_exe.map`, the DLL's `build/<name>.map`.
+
+### `[link]`
+
+The DOS game's standalone exe links Watcom's library modules from the
+user's toolchain (`build.watcom`) rather than from the original.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `libs` | `{}` | library names and their paths in the Watcom directory: `CLIB3R = "LIB386/DOS/CLIB3R.LIB"` |
+| `modules` | `[]` | the library modules the original links, as `LIB/module`, in the original's order (their code's; a module without code by its data) |
+
+Each module is extracted byte for byte into `build/lib/`. Its code
+goes where `config/symbols.csv` puts its functions, its data where the
+original's fixups to it point. A code segment the original's link
+eliminated (wlink's `option eliminate`) is emptied. wlink's map is
+`build/link/<name>.map`.
 
 ### `[reference]`
 

@@ -94,6 +94,13 @@ DEFAULTS = {
         "manifest": "",  # a TRX symbol manifest that manifest.py names functions and globals from
         "libs": [],  # le: Watcom libraries, in the Watcom directory, that seed_symbols.py fingerprints
     },
+    "link": {
+        # le: Watcom libraries by a short name, in the Watcom directory
+        "libs": {},
+        # le: their modules the original links, "LIB/module", which link_le.py
+        # links from the libraries instead of cutting them from the original
+        "modules": [],
+    },
     "dosbox": {
         "search": ["~/opt/dosbox-staging*/dosbox"],  # le: globs searched for dosbox-staging
     },

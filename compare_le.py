@@ -126,6 +126,10 @@ def compare_module(mod, orig, by_symbol):
     bases = {}
     layout = {}
     segs = mod.segments
+    # A module's references to its own local symbols (a static of a
+    # library module) are to its segments: their names need not be unique.
+    local = {name: (si, off) for si, seg in enumerate(segs[1:], 1) for off, name, public in seg.publics
+             if not public}
     first = set()
     for seg, name, start, end in mod.functions():
         lead = 0
@@ -173,6 +177,9 @@ def compare_module(mod, orig, by_symbol):
                     continue
                 target = orig.fixups[at]
             kind, what = f.target
+            if kind == "ext" and what in local:
+                (what, off_local), kind = local[what], "seg"
+                inline += off_local
             if kind == "ext":
                 sym = by_symbol.get(what)
                 if not sym:
@@ -272,6 +279,9 @@ def compare_module(mod, orig, by_symbol):
             target = orig.fixups[at]
             inline, = struct.unpack_from("<i", ours, f.offset)
             kind, what = f.target
+            if kind == "ext" and what in local:
+                (what, off_local), kind = local[what], "seg"
+                inline += off_local
             if kind == "ext":
                 sym = by_symbol.get(what)
                 expect = int(sym["address"], 16) + f.disp + inline if sym else None

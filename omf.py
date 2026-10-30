@@ -40,6 +40,7 @@ class Module:
         self.groups = [None]
         self.externs = [None]
         self.publics = {}
+        self.absolutes = {}  # publics with no segment (_fltused_), by name
         self.comdefs = {}
         self.parse(data)
 
@@ -47,12 +48,15 @@ class Module:
         p = 0
         last = None
         threads = {}
+        easy = False  # Phar Lap's Easy OMF-386: 32-bit fields in 16-bit records
         while p < len(d):
             typ = d[p]
             ln, = struct.unpack_from("<H", d, p + 1)
             body = d[p + 3:p + 3 + ln - 1]
             p += 3 + ln
-            big = typ & 1
+            if typ == 0x88 and ln > 3 and d[p - ln + 1] == 0xAA:
+                easy = True
+            big = typ & 1 or easy
             r = Reader(body, big)
             t = typ & ~1
             if t == 0x80:
@@ -94,6 +98,8 @@ class Module:
                 while not r.done():
                     name, off = r.name(), r.word_or_dword()
                     r.index()
+                    if not seg:
+                        self.absolutes[name] = off
                     if seg:
                         self.publics[name] = (seg, off)
                         self.segments[seg].publics.append((off, name, t == 0x90))
@@ -217,10 +223,11 @@ class Reader:
         return out * count
 
 
-def modules(path):
+def members(path):
+    """Returns the raw OMF of each module of a library (or the one object)."""
     d = open(path, "rb").read()
     if d[0] != 0xF0:
-        return [Module(d)]
+        return [d]
     page = struct.unpack_from("<H", d, 1)[0] + 3
     out = []
     p = page
@@ -232,9 +239,46 @@ def modules(path):
             p += 3 + ln
             if typ in (0x8A, 0x8B):
                 break
-        out.append(Module(d[start:p]))
+        out.append(d[start:p])
         p = (p + page - 1) // page * page
     return out
+
+
+def empty_segments(raw, drop):
+    """Returns the module `raw` with the segments of indices `drop` emptied:
+    size 0, their data and its fixups gone."""
+    out = bytearray()
+    p, nseg, skip = 0, 0, False
+    easy = False
+    while p < len(raw):
+        typ = raw[p]
+        ln, = struct.unpack_from("<H", raw, p + 1)
+        rec = bytearray(raw[p:p + 3 + ln])
+        p += 3 + ln
+        if typ == 0x88 and ln > 3 and rec[4] == 0xAA:
+            easy = True
+        big = typ & 1 or easy
+        if typ in (0x98, 0x99):
+            nseg += 1
+            if nseg in drop:
+                at = 4 if rec[3] & 0xE0 else 7
+                rec[at:at + (4 if big else 2)] = bytes(4 if big else 2)
+        elif typ in (0xA0, 0xA1, 0xA2, 0xA3):
+            seg = rec[3] if rec[3] < 0x80 else (rec[3] & 0x7F) << 8 | rec[4]
+            skip = seg in drop
+            if skip:
+                continue
+        elif typ in (0x9C, 0x9D) and skip:
+            continue
+        else:
+            skip = False
+        rec[-1] = -sum(rec[:-1]) & 0xFF
+        out += rec
+    return bytes(out)
+
+
+def modules(path):
+    return [Module(m) for m in members(path)]
 
 
 def main():

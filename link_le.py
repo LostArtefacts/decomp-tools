@@ -4,9 +4,8 @@
 
 Writes build/<name>_standalone.exe, a DOS/4GW LE executable that runs
 without the original. The original's code and data that src/ does not
-provide (Watcom's C library, the sound and video libraries, the 16-bit
-keyboard handler and any data no module defines yet) are cut out of the
-user's original at link time into OMF objects in build/link/; nothing
+provide (the sound and video libraries, the 16-bit keyboard handler
+and any data no module defines yet) are cut out of the user's original at link time into OMF objects in build/link/; nothing
 from the original is ever written outside build/.
 
 Each module's segments are placed at their addresses in the original
@@ -14,7 +13,9 @@ Each module's segments are placed at their addresses in the original
 places it). Every stretch of an object of the original that no module
 covers becomes a segment of a generated "blob" module, which is linked
 right after the module whose segment precedes it, under that segment's
-name, so wlink lays it out where the original has it. The modules are
+name, so wlink lays it out where the original has it. Zeros before a
+segment that its alignment accounts for are wlink's padding, no blob.
+The modules are
 linked in the original's order, which their code addresses give (a
 module without code goes after the one whose data precedes its own).
 An object of the original that holds no module (the 16-bit keyboard
@@ -38,8 +39,13 @@ original's. The stack, a STACK segment wlink takes the initial stack
 pointer from, is the end of the last object after the highest address
 anything refers to or config/symbols.csv names.
 
-The C library comes from the original too, not from CLIB3R.LIB: the
-linker interleaved its modules with the sound and video libraries'.
+The Watcom library modules link.modules names come from the user's
+libraries (link.libs): each is extracted, byte for byte, into build/lib/
+and placed like a module of src/, through config/symbols.csv, so the
+original's interleaving of them with the other libraries is kept. A
+module without code goes where neither its empty code segments nor the
+empty data segments of the modules after it pad anything, as in the
+original's link.
 """
 import csv, glob, os, struct, subprocess, sys
 
@@ -52,6 +58,32 @@ from project import ROOT, NAME, watcom
 
 OUT = project.EXE
 LINK = "build/link"
+LIB = "build/lib"
+
+
+def library_objects():
+    """Extracts link.modules from link.libs into build/lib/, in link order."""
+    link = project.config["link"]
+    if not link["modules"]:
+        return []
+    w = watcom()
+    libs = {}
+    paths = []
+    os.makedirs(LIB, exist_ok=True)
+    for entry in link["modules"]:
+        lib, name = entry.split("/")
+        if lib not in libs:
+            libs[lib] = {}
+            for raw in omf.members(os.path.join(w, link["libs"][lib])):
+                mod = omf.Module(raw)
+                libs[lib][mod.name.replace("\\", "/").rsplit("/", 1)[-1].split(".")[0]] = raw
+        if name not in libs[lib]:
+            sys.exit(f"error: {link['libs'][lib]} has no module {name}")
+        path = os.path.join(LIB, f"{lib}_{name}.obj".lower())
+        with open(path, "wb") as f:
+            f.write(libs[lib][name])
+        paths.append(path)
+    return paths
 
 
 class Omf:
@@ -107,11 +139,16 @@ def original_fixups(le):
                 yield src, kind, le.objects[obj - 1]["base"] + target
 
 
+ALIGN = {0: 1, 1: 1, 2: 2, 3: 16, 4: 256, 5: 4}  # OMF segment alignments
+
+
 def place_modules(orig):
     """Returns [(path, module, {segment index: address})] in link order."""
     by_symbol, _ = compare_le.load_symbols()
+    le = LE(project.ORIGINAL)
+    stack = le.objects[le.esp_obj - 1]["base"] + le.esp
     mods = []
-    for path in sorted(glob.glob("build/obj/*.obj")):
+    for path in sorted(glob.glob("build/obj/*.obj")) + library_objects():
         for mod in omf.modules(path):
             _, bases = compare_le.compare_module(mod, orig, by_symbol)
             bases = dict(bases)
@@ -119,25 +156,118 @@ def place_modules(orig):
                 si = mod.segments.index(seg)
                 if si not in bases and name in by_symbol:
                     bases[si] = int(by_symbol[name]["address"], 16) - start
+            place_by_fixups(mod, bases, orig, by_symbol)
+            for si, seg in enumerate(mod.segments):
+                if seg and seg.size and seg.cls == "STACK" and si not in bases:
+                    bases[si] = stack - seg.size  # the end of the stack, as any order fills it
+                    stack -= seg.size
+            # Code of a library module the original lacks is a segment its
+            # link eliminated (wlink's option eliminate drops unreferenced
+            # code segments; the original's link only met one, heapen's
+            # _heapenable): the module is linked with it emptied.
+            gone = {i for i, s in enumerate(mod.segments)
+                    if s and s.size and i not in bases and s.is_code() and path.startswith(LIB)}
+            if gone:
+                with open(path, "rb") as f:
+                    raw = omf.empty_segments(f.read(), gone)
+                with open(path, "wb") as f:
+                    f.write(raw)
+                mod = omf.Module(raw)
             missing = [s.name for i, s in enumerate(mod.segments) if s and s.size and i not in bases]
             if missing:
                 sys.exit(f"error: {path}: no place in the original for {', '.join(missing)}")
             mods.append((path, mod, bases))
-    # The code gives the order; a module without code goes right after the
-    # one whose segment of the same name precedes its first segment.
+    # The code gives the order; a module without code goes among the ones
+    # whose segments of the same name surround its first segment.
+    # (The startup's BEGTEXT leads the code, but its _TEXT, the bulk of
+    # it, is where the link put it: a module goes by its largest code.)
     def code(m):
-        return min((a for i, a in m[2].items() if m[1].segments[i].size and m[1].segments[i].is_code()),
-                   default=None)
+        segs = [(m[1].segments[i].size, -a, a) for i, a in m[2].items()
+                if m[1].segments[i].size and m[1].segments[i].is_code()]
+        return max(segs)[2] if segs else None
     ordered = sorted((m for m in mods if code(m) is not None), key=code)
     for m in mods:
         if code(m) is not None:
             continue
-        si, at = min(((i, a) for i, a in m[2].items() if m[1].segments[i].size), key=lambda x: x[1])
-        name = m[1].segments[si].name
-        before = [(a, n) for n, o in enumerate(ordered) for i, a in o[2].items()
-                  if o[1].segments[i].name == name and a < at]
-        ordered.insert(max(before)[1] + 1 if before else 0, m)
+        # Each of its segments goes after the ones of the same name below it
+        # and before those above it.
+        before, after = [], []
+        for si, at in m[2].items():
+            name = m[1].segments[si].name
+            if not m[1].segments[si].size:
+                continue
+            before += [(a, n) for n, o in enumerate(ordered) for i, a in o[2].items()
+                       if o[1].segments[i].name == name and a < at]
+            after += [(a, n) for n, o in enumerate(ordered) for i, a in o[2].items()
+                      if o[1].segments[i].name == name and o[1].segments[i].size and a > at]
+        lo = max(n for _, n in before) + 1 if before else 0
+        hi = min(n for _, n in after) if after else len(ordered)
+        # Its empty code segments still align: it goes where the code
+        # before it ends aligned to them, so they pad nothing. That is the
+        # code blob after the module before it, or for a library module
+        # that module's own code (the blob is linked after the library
+        # module, see find_pieces).
+        align = max((ALIGN[s.align] for s in m[1].segments[1:] if s.is_code()), default=1)
+        def code_end(n):
+            return next((max(a + o[1].segments[i].size for i, a in o[2].items() if o[1].segments[i].is_code())
+                         for o in reversed(ordered[:n]) if code(o) is not None), 0)
+        def next_code(n):
+            return next((min(a for i, a in o[2].items() if o[1].segments[i].is_code() and o[1].segments[i].size)
+                         for o in ordered[n:] if code(o) is not None), 0)
+        where = code_end if m[0].startswith(LIB) else next_code
+        # Nor may its data's end be padded by the empty segments of the
+        # same name that modules after it bring until the next data.
+        def data_pads(n):
+            for si, at in m[2].items():
+                seg = m[1].segments[si]
+                if not seg.size or seg.is_code():
+                    continue
+                end = at + seg.size
+                for o in ordered[n:]:
+                    same = [s for s in o[1].segments if s and s.name == seg.name]
+                    if any(s.size for s in same):
+                        break
+                    if any(end % ALIGN[s.align] for s in same):
+                        return True
+            return False
+        at = next((n for n in range(lo, hi + 1) if where(n) % align == 0 and not data_pads(n)),
+                  next((n for n in range(lo, hi + 1) if where(n) % align == 0), lo))
+        ordered.insert(at, m)
     return ordered
+
+
+def place_by_fixups(mod, bases, orig, by_symbol):
+    """Places the segments nothing refers to by the original's fixups in them.
+
+    A segment only the startup walks (a library module's XI and YI entries)
+    has neither a public nor a fixup to it; its own fixups to segments and
+    symbols already placed find it, where exactly one place fits them all.
+    """
+    while True:
+        found = False
+        for si, seg in enumerate(mod.segments):
+            if not seg or not seg.size or si in bases or not seg.fixups:
+                continue
+            expect = []
+            for f in seg.fixups:
+                if f.rel:
+                    continue
+                inline, = struct.unpack_from("<i", seg.data, f.offset)
+                kind, what = f.target
+                if kind == "seg" and what in bases:
+                    expect.append((f.offset, bases[what] + f.disp + inline))
+                elif kind == "ext" and what in by_symbol:
+                    expect.append((f.offset, int(by_symbol[what]["address"], 16) + f.disp + inline))
+            if not expect:
+                continue
+            off, target = expect[0]
+            at = {src - off for src, t in orig.fixups.items() if t == target}
+            at = [a for a in at if all(orig.fixups.get(a + o) == t for o, t in expect)]
+            if len(at) == 1:
+                bases[si] = at[0]
+                found = True
+        if not found:
+            return
 
 
 def find_pieces(le, mods):
@@ -149,11 +279,25 @@ def find_pieces(le, mods):
         if a1 < e0:
             print(f"warning: {mods[n0][0]} and {mods[n1][0]} overlap at {a1:#x}")
     pieces = []
+    images = {base: data for base, data, _ in le.image()[0]}
     for oi, o in enumerate(le.objects):
         base, end = o["base"], o["base"] + o["size"]
         inside = [r for r in regions if base <= r[0] < end]
         at, prev = base, None
+        if oi in (le.eip_obj - 1, le.esp_obj - 1) and inside and inside[0][0] == base:
+            # A module (the startup) leads the object: an empty head keeps
+            # the object order, the code first and DGROUP after the others.
+            seg, cls = ("BEGTEXT", "CODE") if oi == le.eip_obj - 1 else ("_NULL", "BEGDATA")
+            pieces.append(Piece(base, base, oi, seg, cls, None))
+            pieces[-1].use32 = bool(o["flags"] & 0x2000)
+            pieces[-1].dgroup = oi == le.esp_obj - 1
         for r in inside + [(end, end, None, None)]:
+            if r[0] > at and r[2] is not None and not any(images[base][at - base:r[0] - base]):
+                # Zeros up to a segment that aligns to its start are its
+                # padding, wlink's to make.
+                align = ALIGN[mods[r[2]][1].segments[r[3]].align]
+                if r[0] % align == 0 and r[0] - at < align:
+                    at = r[0]
             if r[0] > at:
                 if prev is None:  # Watcom's startup leads the code and DGROUP
                     head = {le.eip_obj - 1: ("BEGTEXT", "CODE"), le.esp_obj - 1: ("_NULL", "BEGDATA")}
@@ -166,6 +310,11 @@ def find_pieces(le, mods):
                 else:
                     s = mods[prev[2]][1].segments[prev[3]]
                     seg, cls, after = s.name, s.cls, prev[2]
+                    if s.is_code() and r[2] is not None and all(
+                            mods[n][0].startswith(LIB) for n in range(prev[2] + 1, r[2])):
+                        # Code goes right before the module of the code after
+                        # it, after the library modules without code between.
+                        after = r[2] - 1
                 pieces.append(Piece(at, r[0], oi, seg, cls, after))
                 pieces[-1].use32 = bool(o["flags"] & 0x2000)
                 pieces[-1].dgroup = oi == le.esp_obj - 1
@@ -209,6 +358,8 @@ def main():
     last = max((p for p in pieces if p.obj == le.esp_obj - 1), key=lambda p: p.end)
     fixups = sorted(set(original_fixups(le)))
     esp = le.objects[le.esp_obj - 1]["base"] + le.esp
+    # The modules' STACK segments (the startup's) end the stack.
+    esp = min([a for a, _, n, si in regions if mods[n][1].segments[si].cls == "STACK"] + [esp])
     assert esp == last.end, f"the stack pointer {esp:#x} is not at the end of the last blob"
     top = max(t for _, _, t in fixups if t < esp)
     top = max(top, max(a + s for a, s, _, _ in symbols if a < esp))
@@ -281,22 +432,27 @@ def main():
     owned = {}
     for p in pieces:
         p.publics = {p.label: 0}
+    in_modules = {n for _, mod, _ in mods for n in mod.publics}
     for a, size, _, sym in symbols:
-        if sym and sym not in owned:
+        if sym and sym not in owned and sym not in in_modules:
             for p in pieces:
                 if p.start <= a < p.end or (a == p.end and not size):
                     owned[sym] = p
                     p.publics[sym] = a - p.start
                     break
     entry = le.entry()
-    holder = next(p for p in pieces if p.cls == "CODE" and p.start <= entry < p.end)
-    holder.publics["__blob_entry"] = entry - holder.start
+    holder = next((p for p in pieces if p.cls == "CODE" and p.start <= entry < p.end), None)
+    if holder:
+        holder.publics["__blob_entry"] = entry - holder.start
+        start = "__blob_entry"
+    else:  # the startup, a library module
+        start = next(sym for a, _, _, sym in symbols if a == entry and sym)
 
     # The modules' externals must all resolve. One no fixup uses only pulls
     # in a library module (__8087, _fltused_, __argc); the first blob defines it.
     defined = set(owned) | {p.label for p in pieces}
     for _, mod, _ in mods:
-        defined |= {n for n, (si, _) in mod.publics.items()}
+        defined |= set(mod.publics) | set(mod.absolutes)
     used = {f.target[1] for _, mod, _ in mods for s in mod.segments[1:] for f in s.fixups if f.target[0] == "ext"}
     missing = sorted({e for _, mod, _ in mods for e in mod.externs[1:] if e not in defined})
     if [e for e in missing if e in used]:
@@ -318,7 +474,7 @@ def main():
         "format os2 le",
         "option osname='DOS/4G'",
         f"option stub={winpath(os.path.join(LINK, 'stub.exe'))}",
-        "option start=__blob_entry",
+        f"option start={start}",
         "option nodefaultlibs",
         "option quiet",
         f"option map={winpath(os.path.join(LINK, NAME + '.map'))}",
