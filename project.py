@@ -1,11 +1,12 @@
 """Reads the game's project.toml, the one place for what differs between
 the games: names, paths, the code's end, compiler and linker flags,
-libraries.
+libraries, and the backend.
 
     project.py get KEY        print a setting (game.name, ghidra.project...)
     project.py ghidra         print the Ghidra installation's directory
     project.py orig           verify the original's checksums, copy it to build/
     project.py game           set up build/game: game data, patched exe and DLL
+                              (le: game files, CD image, hooked exe)
     project.py standalone     copy the standalone exe (and extras) into build/game
     project.py clean          remove build outputs (keeps the Ghidra project)
 
@@ -13,6 +14,14 @@ The file is project.toml in the game repository's root (the directory
 above tools/), or the one the DECOMP_PROJECT environment variable names.
 Other tools import this module and read `config`, or the shorthands
 below. Paths in the file are relative to the repository's root.
+
+game.format picks the backend: "pe" (the default) for a Windows PE
+built with MSVC into a hook DLL, "le" for a DOS4GW LE built with Watcom
+C and MASM into objects hooked into a copy of the LE. build.toolchain
+defaults to the format's: "msvc" for pe, "watcom" for le. The Watcom,
+MASM and DOSBox search lists are globs, with ~ for the home directory,
+tried in order, the newest match of each first; the WATCOM, MASM and
+DOSBOX environment variables override them.
 """
 import copy, glob, os, shutil, subprocess, sys, tomllib
 
@@ -21,6 +30,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 PATH = os.environ.get("DECOMP_PROJECT") or os.path.join(ROOT, "project.toml")
 
 REQUIRED = object()  # a setting without a default
+TOOLCHAINS = {"pe": "msvc", "le": "watcom"}  # each format's default toolchain
 
 # Every setting, with its default.
 DEFAULTS = {
@@ -28,6 +38,7 @@ DEFAULTS = {
         "name": REQUIRED,  # short name: build/<name>.dll, build/<name>.exe
         "dir": REQUIRED,  # the original game's files
         "exe": REQUIRED,  # the original executable's name in dir
+        "format": "pe",  # the backend: "pe" (Windows, MSVC) or "le" (DOS4GW, Watcom)
         "original": REQUIRED,  # where its verified copy goes, an ASCII path
         "game_end": REQUIRED,  # the game's code ends here; libraries follow
         "title": "",  # the progress chart's title; defaults to the name
@@ -36,6 +47,11 @@ DEFAULTS = {
         "screen": "640x480x24",  # play.py's Xvfb screen
         "checksums": "",  # a `sha1sum -c` file, run from its own directory
         "standalone_extras": [],  # globs copied into build/game with the standalone exe
+        "code": [],  # le: the code object's [start, end) in the flattened executable
+        "hooked": "",  # le: where `project.py game` writes the hooked exe, in build/game
+        "copy": [],  # le: files of dir copied into build/game
+        "link": [],  # le: globs of dir symlinked into build/game
+        "cd": "",  # le: the CD image in build/game that play.py mounts as D:
     },
     "ghidra": {
         "path": "",  # the Ghidra installation; GHIDRA overrides it
@@ -44,6 +60,7 @@ DEFAULTS = {
         "functions": "",  # defaults to build/functions_<project>.csv
     },
     "build": {
+        "toolchain": "",  # "msvc" or "watcom"; defaults to the format's
         "bin": r"C:\msvc5\bin",
         "include": [r"C:\dx5\include", r"C:\msvc5\include"],
         "lib": [r"C:\dx5\lib", r"C:\msvc5\lib"],
@@ -54,6 +71,9 @@ DEFAULTS = {
         "asflags": ["/c", "/coff"],
         "timeout": 60,
         "hook": "",
+        "watcom": ["~/opt/watcom10.6"],  # watcom: globs searched for Watcom C 10.6
+        "masm": ["~/opt/masm611"],  # watcom: globs searched for MASM 6.11's ML.EXE
+        "hook_base": 0x200000,  # watcom: where patch_exe.py loads the compiled functions
     },
     "dll": {
         "ldflags": ["/DLL", "/NODEFAULTLIB", "/ENTRY:DllMain", "/BASE:0x30000000"],
@@ -72,6 +92,10 @@ DEFAULTS = {
     "symbols": {
         "import_libs": [".wine/drive_c/msvc5/lib", ".wine/drive_c/dx5/lib"],
         "manifest": "",  # a TRX symbol manifest that manifest.py names functions and globals from
+        "libs": [],  # le: Watcom libraries, in the Watcom directory, that seed_symbols.py fingerprints
+    },
+    "dosbox": {
+        "search": ["~/opt/dosbox-staging*/dosbox"],  # le: globs searched for dosbox-staging
     },
     "hooks": {
         "progress": False,  # pre-commit redraws docs/progress.svg
@@ -120,6 +144,17 @@ def load(path=PATH):
             if value is REQUIRED:
                 sys.exit(f"{path}: {section}.{name} is required")
     game, ghidra = config["game"], config["ghidra"]
+    if game["format"] not in TOOLCHAINS:
+        sys.exit(f"{path}: game.format is {game['format']!r}, not one of {', '.join(TOOLCHAINS)}")
+    build = config["build"]
+    build["toolchain"] = build["toolchain"] or TOOLCHAINS[game["format"]]
+    if build["toolchain"] != TOOLCHAINS[game["format"]]:
+        sys.exit(f"{path}: build.toolchain {build['toolchain']!r} does not build game.format "
+                 f"{game['format']!r}, {TOOLCHAINS[game['format']]!r} does")
+    if game["format"] == "le":
+        for name in ("code", "hooked"):
+            if not game[name]:
+                sys.exit(f"{path}: game.{name} is required with game.format = \"le\"")
     game["title"] = game["title"] or game["name"]
     game["window_title"] = game["window_title"] or game["title"]
     stem = os.path.splitext(os.path.basename(game["original"]))[0]
@@ -136,6 +171,12 @@ DLL = f"build/{NAME}.dll"
 EXE = f"build/{NAME}.exe"
 EXE_MAP = f"build/{NAME}_exe.map"  # the DLL's map is build/<name>.map
 GAME = "build/game"  # a runnable copy of the game
+FORMAT = config["game"]["format"]
+TOOLCHAIN = config["build"]["toolchain"]
+CODE = tuple(config["game"]["code"])  # le
+ELF = f"build/{NAME}.elf"  # le: the flattened original
+FUNCTIONS = "build/functions.csv"  # le: functions.py's function starts
+HOOKED = os.path.join(GAME, config["game"]["hooked"])  # le
 
 
 def get(key):
@@ -160,6 +201,34 @@ def ghidra_home():
     return found[-1]
 
 
+def locate(var, patterns, holds=""):
+    """What the environment variable `var` names, or else the first match
+    of the globs `patterns`, the newest of each first, that holds the
+    file `holds`."""
+    ok = lambda p: os.path.exists(os.path.join(p, holds) if holds else p)
+    if os.environ.get(var) and (not holds or ok(os.environ[var])):
+        return os.environ[var]
+    for pattern in patterns:
+        for path in sorted(glob.glob(os.path.expanduser(pattern)), reverse=True):
+            if ok(path):
+                return path
+
+
+def watcom():
+    return locate("WATCOM", config["build"]["watcom"], os.path.join("BINNT", "WCC386.EXE")) or \
+        sys.exit("error: set WATCOM or build.watcom to a Watcom C 10.6 directory")
+
+
+def masm():
+    return locate("MASM", config["build"]["masm"], "ML.EXE") or \
+        sys.exit("error: set MASM or build.masm to a directory with MASM 6.11's ML.EXE")
+
+
+def dosbox():
+    return locate("DOSBOX", config["dosbox"]["search"]) or \
+        sys.exit("error: set DOSBOX or dosbox.search to a dosbox-staging binary")
+
+
 def orig():
     """Verifies the original's files against game.checksums and copies the
     executable to game.original."""
@@ -169,16 +238,40 @@ def orig():
                        cwd=os.path.join(ROOT, os.path.dirname(sums)), check=True)
     os.makedirs(os.path.dirname(ORIGINAL), exist_ok=True)
     shutil.copyfile(os.path.join(config["game"]["dir"], config["game"]["exe"]), ORIGINAL)
+    if FORMAT == "le":
+        import le
+        objs, fixups = le.write_elf(le.LE(ORIGINAL), ELF)
+        print(f"wrote {ELF}: {len(objs)} objects, {len(fixups)} fixups")
 
 
 def game():
     """Copies the game's files into build/game, its exe replaced with one
     that loads the hook DLL."""
+    if FORMAT == "le":
+        return game_le()
     import patch_exe
     shutil.copytree(config["game"]["dir"], GAME, dirs_exist_ok=True, symlinks=True)
     os.remove(os.path.join(GAME, config["game"]["exe"]))
     patch_exe.patch(ORIGINAL, os.path.join(GAME, f"{NAME}.exe"))
     shutil.copyfile(DLL, os.path.join(GAME, os.path.basename(DLL)))
+
+
+def game_le():
+    """Copies game.copy and links game.link into build/game, and writes the
+    original with the compiled functions hooked in to game.hooked."""
+    import patch_le
+    src = config["game"]["dir"]
+    os.makedirs(os.path.dirname(HOOKED), exist_ok=True)
+    for name in config["game"]["copy"]:
+        os.makedirs(os.path.dirname(os.path.join(GAME, name)), exist_ok=True)
+        shutil.copyfile(os.path.join(src, name), os.path.join(GAME, name))
+    for pattern in config["game"]["link"]:
+        for path in sorted(glob.glob(os.path.join(src, pattern))):
+            link = os.path.join(GAME, os.path.relpath(path, src))
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.abspath(path), link)
+    patch_le.patch(HOOKED)
 
 
 def standalone():
@@ -191,8 +284,11 @@ def standalone():
 
 
 def clean():
-    paths = ["build/src", GAME, *glob.glob("build/obj*"), *glob.glob(f"build/{NAME}.*"),
-             *glob.glob(f"build/{NAME}_exe.*")]
+    if FORMAT == "le":
+        paths = ["build/obj", GAME, "build/shots", *glob.glob(f"build/{NAME}.*")]
+    else:
+        paths = ["build/src", GAME, *glob.glob("build/obj*"), *glob.glob(f"build/{NAME}.*"),
+                 *glob.glob(f"build/{NAME}_exe.*")]
     for path in paths:
         if os.path.isdir(path):
             shutil.rmtree(path)
