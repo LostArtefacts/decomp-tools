@@ -7,7 +7,9 @@ them on.
 
 hooks.no_comments fails the commit when a staged file in src/ holds a
 comment, a tab or a carriage return, so nothing is ported from a
-reference's source as is. src/dll/, the DLL's own code, is exempt.
+reference's source as is. src/dll/, the DLL's own code, is exempt, and so
+is a first line `// cflags: ...`, which build.py reads as the file's
+compiler flags.
 
 hooks.compare builds src/ and fails the commit unless every function it
 defines matches the original byte for byte (`just compare`). src/ and
@@ -74,7 +76,8 @@ def commented():
         if name.startswith("src/dll/") or not name.endswith((".c", ".cpp", ".h", ".hpp")):
             continue
         text = git("show", f":{name}").stdout
-        why = [w for w, hit in (("comments", any(c in strip_strings(text) for c in ("/*", "//"))),
+        code = re.sub(r"\A(//\s*cflags:[^\n]*|/\*\s*cflags:[^\n]*\*/)\n", "\n", text)
+        why = [w for w, hit in (("comments", any(c in strip_strings(code) for c in ("/*", "//"))),
                                 ("tabs", "\t" in text), ("CRs", "\r" in text)) if hit]
         if why:
             bad.append(f"  {name}: {', '.join(why)}")
