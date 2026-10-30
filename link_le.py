@@ -15,7 +15,14 @@ places it). Every stretch of an object of the original that no module
 covers becomes a segment of a generated "blob" module, which is linked
 right after the module whose segment precedes it, under that segment's
 name, so wlink lays it out where the original has it. The modules are
-linked in the original's order, which their code addresses give.
+linked in the original's order, which their code addresses give (a
+module without code goes after the one whose data precedes its own).
+An object of the original that holds no module (the 16-bit keyboard
+handler, the video player's tables) becomes a segment of its own class,
+linked first, so wlink keeps the original's objects and their bases.
+For tr01 this reproduces the original's image byte for byte except the
+functions in config/nonmatching.txt; the object flags lack the preload
+bit and the original's read-only object is writable.
 
 The blobs carry the original's fixups as OMF fixups: a target in a blob
 goes through that blob's segment or its label (__blob_<address>), a
@@ -116,8 +123,21 @@ def place_modules(orig):
             if missing:
                 sys.exit(f"error: {path}: no place in the original for {', '.join(missing)}")
             mods.append((path, mod, bases))
-    mods.sort(key=lambda m: min((a for i, a in m[2].items() if m[1].segments[i].size), default=1 << 32))
-    return mods
+    # The code gives the order; a module without code goes right after the
+    # one whose segment of the same name precedes its first segment.
+    def code(m):
+        return min((a for i, a in m[2].items() if m[1].segments[i].size and m[1].segments[i].is_code()),
+                   default=None)
+    ordered = sorted((m for m in mods if code(m) is not None), key=code)
+    for m in mods:
+        if code(m) is not None:
+            continue
+        si, at = min(((i, a) for i, a in m[2].items() if m[1].segments[i].size), key=lambda x: x[1])
+        name = m[1].segments[si].name
+        before = [(a, n) for n, o in enumerate(ordered) for i, a in o[2].items()
+                  if o[1].segments[i].name == name and a < at]
+        ordered.insert(max(before)[1] + 1 if before else 0, m)
+    return ordered
 
 
 def find_pieces(le, mods):
@@ -137,8 +157,12 @@ def find_pieces(le, mods):
             if r[0] > at:
                 if prev is None:  # Watcom's startup leads the code and DGROUP
                     head = {le.eip_obj - 1: ("BEGTEXT", "CODE"), le.esp_obj - 1: ("_NULL", "BEGDATA")}
-                    seg, cls = head.get(oi, (f"OBJ{oi + 1}", "CODE" if o["flags"] & 4 else "DATA"))
-                    after = None if oi in head else len(mods) - 1
+                    # Any other object of the original is a segment of its
+                    # own class (wlink makes an object of each), linked first
+                    # to keep the original's object order.
+                    kind = "CODE" if o["flags"] & 4 else "DATA"
+                    seg, cls = head.get(oi, (f"OBJ{oi + 1}", f"OBJ{oi + 1}{kind}"))
+                    after = None
                 else:
                     s = mods[prev[2]][1].segments[prev[3]]
                     seg, cls, after = s.name, s.cls, prev[2]
