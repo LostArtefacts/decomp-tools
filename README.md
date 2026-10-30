@@ -1,8 +1,9 @@
 # decomp-tools
 
-Tooling for matching decompilations of the Windows Tomb Raider games,
-Tomb Raider II to Chronicles, built with MSVC 5 and 6 under Wine, on
-Linux. The goal of such a project is C source that compiles, with the
+Tooling for matching decompilations of the Tomb Raider games, on Linux:
+the Windows games, Tomb Raider II to Chronicles, built with MSVC 5 and 6
+under Wine, and the DOS Tomb Raider, built with Watcom C 10.6 and MASM
+6.11 under Wine and run in DOSBox. The goal of such a project is C source that compiles, with the
 original toolchain, into code byte-for-byte identical to the original
 executable.
 
@@ -13,6 +14,12 @@ it with the original section by section. They also drive the game
 headless under Xvfb, analyze the original with headless Ghidra and name
 its functions from TRX's symbol manifests.
 
+For the DOS game they read the DOS/4GW LE executable and flatten it
+into an ELF file for Ghidra and objdump, compare Watcom's OMF objects
+with it function by function and data segment by data segment, hook
+the compiled functions into a copy of the LE as a new object, and drive
+the game headless in DOSBox.
+
 They started as a fork of [Cirno Labs' decomp-tools](https://github.com/Cirno-Labs/decomp-tools),
 the Touhou games' MSVC 7 tooling. The differences: C sources as well
 as C++, a configurable source encoding instead of Shift-JIS, MSVC 5/DX5
@@ -22,7 +29,8 @@ and `manifest.py`.
 This repository holds tools only. It contains no game code or data, no
 decompiled source and nothing from Microsoft's toolchain or SDKs. Each
 game repository brings its own source and symbols, and each user brings
-their own copy of the game and the compiler.
+their own copy of the game and the compiler. Nothing from Watcom's or
+Microsoft's toolchains, libraries or headers is included either.
 
 ## The games
 
@@ -35,6 +43,12 @@ The Steam releases, as read from their PE and Rich headers
 | TR3 | `tomb3.exe` | 1998-12-02 | 5.10 | MSVC 5.0 SP3: 492 unmarked objects, cvtres 5.00.1668 |
 | TR4 | `tomb4.exe` | 1999-12-17 | 6.00.8447 | MSVC 6.0: C 12.00.8168 and 8447, MASM 6.13 |
 | TR5 | `PCTomb5.exe` | 2000-11-13 | 6.00.8447 | MSVC 6.0: C 12.00.8168 and 8447, MASM 6.13 |
+
+And the DOS game, GOG's release, as read from its LE header and code:
+
+| Game | Executable | Format | Compiler |
+| --- | --- | --- | --- |
+| TR1 | `TOMB.EXE` (`TOMBno3Dfx.EXE` in the GOG release) | DOS/4GW LE | Watcom C 10.6 (`wcc386`), MASM 6.11, Watcom's `CLIB3R` and `MATH387R` |
 
 TRX's `docs/symbols/` has a manifest of named functions and globals
 for each of them.
@@ -66,7 +80,14 @@ build/        outputs
 tools/        this repository
 ```
 
-`examples/tr2.toml` is tr02's configuration. To add the tools to a game
+`game.format` in `project.toml` picks the backend: `pe` (the default)
+for the Windows games, `le` for the DOS one. A DOS game has no hook
+DLL, standalone exe or Wine prefix with the toolchain: `src/` holds
+`.c` and `.asm` files only, `build/obj/` the OMF objects, and Watcom
+and MASM are found on the host (see `[build]`).
+
+`examples/tr2.toml` is tr02's configuration, `examples/tr1.toml`
+tr01's. To add the tools to a game
 repository:
 
 ```sh
@@ -89,7 +110,7 @@ just tools-init hooks
 | `exe [STEP...]` | link the standalone `build/<name>.exe`; `FEAT=a,b` turns on features |
 | `compare-exe [-v]` | compare the standalone exe with the original, section by section |
 | `dxsdk INSTALLER` | install a DirectX SDK's headers and libraries into the prefix (`C:\dx5`) |
-| `analyze` | analyze the original with headless Ghidra, create the functions `config/symbols.csv` lists that it missed, seed `config/symbols.csv` |
+| `analyze` | analyze the original with headless Ghidra, create the functions `config/symbols.csv` lists that it missed, seed `config/symbols.csv`; `le`: list the function starts (`functions.py`) and add Watcom's `__watcall` convention first |
 | `manifest [-n] [FILE]` | name `config/symbols.csv`'s rows from a TRX manifest |
 | `decompile [ADDR...]` | write Ghidra's pseudocode to `build/decomp/` |
 | `probe [-j N]` | compile the reference source tree and score each of its functions against the original |
@@ -98,6 +119,19 @@ just tools-init hooks
 | `progress` | render `docs/progress.svg` |
 | `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers, and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
+
+They dispatch on `game.format`. With `le`, `build` only compiles into
+`build/obj/`, `compare` also compares the data segments and accepts the
+functions `config/nonmatching.txt` lists as known not to match, `game`
+writes the original with `src/` hooked in to `game.hooked`, `run` runs
+it in DOSBox, and `progress` brings the build up to date first. `exe`,
+`compare-exe`, `dxsdk`, `manifest`, `probe`, `fn` and `permute` are
+`pe` only; these are `le` only:
+
+| Recipe | Does |
+| --- | --- |
+| `run-orig [STEP...]` | run the unmodified original in DOSBox |
+| `bss [-v] [MODULE...]` | check each module's `_BSS` order against `wcc386`'s layout rule |
 
 Compiles run on half the cores; `JOBS` overrides it. Ghidra is found
 through `GHIDRA`, `ghidra.path` or the newest match of `ghidra.search`
@@ -150,6 +184,21 @@ puts it on `main` at the same commit.
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 
+The DOS backend's own, which `build.py`, `compare.py`, `patch_exe.py`
+and `seed_symbols.py` hand over to with `game.format = "le"`:
+
+| File | Does |
+| --- | --- |
+| `le.py` | reads the LE executable, flattens it into an ELF file, writes a patched LE back (`roundtrip` must give the same file) |
+| `omf.py` | Watcom and MASM OMF objects and libraries |
+| `build_watcom.py` | compiles `src/*.c` with `wcc386` and assembles `src/*.asm` with MASM `ML` under Wine |
+| `compare_le.py` | compares OMF objects with the LE image function by function, every fixup resolved; places and compares the data segments |
+| `patch_le.py` | hooks the compiled functions into a copy of the original as a new object |
+| `seed_symbols_le.py` | adds Ghidra's functions to `symbols.csv` and names Watcom's library functions by fingerprint |
+| `functions.py` | lists function starts in the flattened executable |
+| `bss.py` | models `wcc386`'s `_BSS` layout (needs pycparser) |
+| `ghidra/Watcom.java` | Watcom's `__watcall` register calling convention for Ghidra |
+
 ## project.toml
 
 Paths are relative to the game repository's root. Hex numbers are
@@ -162,6 +211,7 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `name` | required | short name: `build/<name>.dll`, `build/<name>.exe`, `<name>.exe` in `build/game/`, the hook log's prefix |
 | `dir` | required | the original game's files, such as `orig/tomb2` |
 | `exe` | required | the original executable's file name in `dir` |
+| `format` | `pe` | the backend: `pe` (Windows PE, MSVC) or `le` (DOS/4GW LE, Watcom) |
 | `original` | required | where the verified executable is copied, an ASCII path such as `build/tomb2.exe` |
 | `game_end` | required | the address the game's code ends at; library code follows |
 | `checksums` | none | a `sha1sum -c` file, run from its own directory |
@@ -170,6 +220,11 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `locale` | none | `play.py`'s `LANG` and `LC_ALL`; none keeps the user's |
 | `screen` | `640x480x24` | `play.py`'s Xvfb screen |
 | `standalone_extras` | `[]` | globs copied into `build/game/` with the standalone exe |
+| `code` | required with `le` | the code object's `[start, end)` in the flattened executable |
+| `hooked` | required with `le` | where `game` writes the hooked exe, relative to `build/game/` |
+| `copy` | `[]` | `le`: files of `dir` copied into `build/game/` |
+| `link` | `[]` | `le`: globs of `dir` symlinked into `build/game/` |
+| `cd` | none | `le`: the CD image in `build/game/` that `run` mounts as `D:` |
 
 ### `[ghidra]`
 
@@ -184,6 +239,7 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `toolchain` | the format's | `msvc` for `pe`, `watcom` for `le`; no other pairing builds |
 | `cflags` | required | the compiler flags; a source file's first line `// cflags: /Os -/Oi` or `/* cflags: ... */` adds and removes some |
 | `encoding` | `cp1252` | the code page `src/`'s UTF-8 is converted to before `cl` reads it; with `cp932` a second byte of `\` is doubled |
 | `crlf` | `false` | convert `src/`'s LF line endings to CRLF before `cl` reads it: VC++ 5 can allocate registers differently for the same code by line endings; switching it rebuilds everything |
@@ -194,6 +250,15 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `asflags` | `/c /coff` | its flags |
 | `timeout` | `60` | seconds before a compile counts as hung |
 | `hook` | none | a Python file with the game's own build steps, see below |
+| `watcom` | `["~/opt/watcom10.6"]` | `watcom`: globs searched for Watcom C 10.6 (with `BINNT`, `H`, `LIB386`); `WATCOM` overrides it |
+| `masm` | `["~/opt/masm611"]` | `watcom`: globs searched for a directory with MASM 6.11's `ML.EXE`; `MASM` overrides it |
+| `hook_base` | `0x200000` | `watcom`: where `game` loads the compiled functions |
+
+With `watcom`, `cflags` and `asflags` go to `wcc386` and `ML`
+unchanged, and an object is rebuilt when its source or any `.h` or
+`.inc` in `src/` is newer. The search lists are tried in order, the
+newest match of each first. `encoding`, `crlf`, `bin`, `include`,
+`lib`, `ml`, `timeout`, `hook` and `[dll]` and `[exe]` are `msvc` only.
 
 ### `[dll]`
 
@@ -233,17 +298,21 @@ compiles and `fn.py` reads.
 | `defines` | `[]` | extra `cl` flags for the reference |
 | `probe` | `build/probe.csv` | where `probe.py` writes its scores, which `fn.py` reads |
 
-### `[symbols]`, `[hooks]`, `[tools]`
+### `[symbols]`, `[hooks]`, `[tools]`, `[dosbox]`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `symbols.import_libs` | `.wine/drive_c/msvc5/lib`, `.wine/drive_c/dx5/lib` | where `seed_symbols.py` looks up decorated import names |
 | `symbols.manifest` | none | the TRX manifest `manifest.py` reads by default |
+| `symbols.libs` | `[]` | `le`: Watcom libraries, relative to the Watcom directory, whose functions `seed_symbols.py` finds by fingerprint |
+| `dosbox.search` | `["~/opt/dosbox-staging*/dosbox"]` | `le`: globs searched for dosbox-staging; `DOSBOX` overrides it |
 | `hooks.progress` | `false` | the pre-commit hook redraws `docs/progress.svg` and adds it |
 | `hooks.compare` | `false` | the pre-commit hook fails unless every compiled function matches the original byte for byte |
 | `hooks.one_function` | `false` | a commit makes at most one more function match, and then its subject is `Decompile NAME (0xADDRESS)`; needs `hooks.progress` |
 | `hooks.no_comments` | `false` | the pre-commit hook fails when a staged file in `src/` (outside `src/dll/`) holds a comment, a tab or a carriage return |
 | `tools.remote` | `git@github.com:LostArtefacts/decomp-tools.git` | where `tools-push` pushes, over SSH |
+
+`[hooks]`' `compare` and `one_function` rules are `pe` only.
 
 ### The commit rules
 
@@ -280,6 +349,8 @@ subject. `git commit --no-verify` skips the hooks.
 - For `run`: Xvfb, xdotool, ImageMagick and 32-bit Mesa OpenGL
 - The original toolchain in the Wine prefix (bring your own copies)
 - Ghidra, for analysis
+- For `le`: Watcom C 10.6 and MASM 6.11 on the host (run under Wine),
+  pycparser for `bss`, dosbox-staging for `run`
 
 ## License
 

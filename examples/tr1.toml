@@ -1,0 +1,34 @@
+# tr01: Tomb Raider, the DOS TOMB.EXE (TOMBno3Dfx.EXE in the GOG release)
+
+[game]
+name = "tomb"
+title = "TOMB.EXE"
+dir = "orig/tomb"
+exe = "TOMBRAID/TOMBno3Dfx.EXE"
+format = "le"  # DOS/4GW LE, Watcom C 10.6
+checksums = "orig/tomb.sha1"
+original = "build/tomb.exe"
+game_end = 0x46E00  # Watcom's C library follows
+code = [0x10000, 0x8FA3E]  # the code object in the flattened executable
+copy = ["TOMBRAID/DOS4GW.EXE", "TOMBRAID/HMIDET.386", "TOMBRAID/HMIDRV.386",
+        "TOMBRAID/HMISET.CFG", "TOMBRAID/SETTINGS.DAT", "TOMBRAID/TOMB.SP"]
+link = ["GAME.DAT", "GAME.GOG", "??.mp3"]
+hooked = "TOMBRAID/TOMB.EXE"
+cd = "GAME.DAT"
+
+[ghidra]
+project = "tomb"
+search = ["~/opt/ghidra_*", "~/data.local/work/ghidra_*"]
+
+[build]
+watcom = ["~/opt/watcom10.6", "~/data.local/watcom/10.6"]  # Watcom C 10.6
+masm = ["~/opt/masm611", "~/data.frost/blob/cirno-labs/masm611/6.11"]  # MASM 6.11
+cflags = ["-bt=dos", "-5r", "-oneatx", "-zq"]
+asflags = ["/nologo", "/c", "/Cp"]
+hook_base = 0x200000  # patch_exe.py loads the compiled functions here
+
+[symbols]
+libs = ["LIB386/DOS/CLIB3R.LIB", "LIB386/MATH387R.LIB"]  # in the Watcom directory
+
+[dosbox]
+search = ["~/opt/dosbox-staging*/dosbox", "~/data.local/work/dosbox-staging*/dosbox"]
