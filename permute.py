@@ -272,32 +272,53 @@ DECL = re.compile(r"^(\s+)((?:const |unsigned |signed |static |register |struct 
 
 
 def declaration_orders(body, limit, rng):
-    """Every order of the top declaration lines and of the names in each,
-    the original first, sampled down to `limit`."""
-    import itertools
+    """Orders of the top declaration lines and of the names in each, the
+    original first: all of them when there are at most `limit`, otherwise
+    `limit` drawn at random. Memory stays proportional to `limit`."""
+    import itertools, math
     lines = body.split("\n")
     top = []
     for i, line in enumerate(lines[2:], 2):
-        if DECL.match(line):
+        m = DECL.match(line)
+        if m and m.group(2).split()[0] not in ("return", "goto", "case", "else", "do"):
             top.append(i)
-        elif line.strip():
+        elif line.strip() or top:
             break
-    if not top or top != list(range(top[0], top[0] + len(top))):
+    if not top:
         return []
     parts = []
     for i in top:
         m = DECL.match(lines[i])
         parts.append((m.group(1), m.group(2).rstrip(), [n.strip() for n in m.group(3).split(",")]))
-    out = []
-    for order in itertools.permutations(range(len(parts))):
-        for names in itertools.product(*[list(itertools.permutations(parts[i][2])) for i in order]):
-            block = [f"{parts[i][0]}{parts[i][1]} {', '.join(ns)};".replace("* ", "*") if parts[i][1].endswith("*")
-                     else f"{parts[i][0]}{parts[i][1]} {', '.join(ns)};" for i, ns in zip(order, names)]
-            out.append("\n".join(lines[:top[0]] + block + lines[top[-1] + 1:]))
-            if len(out) > 200000:
-                break
-    if len(out) > limit:
-        out = [out[0]] + rng.sample(out[1:], limit - 1)
+
+    def render(order, names):
+        block = [f"{parts[i][0]}{parts[i][1]}{'' if parts[i][1].endswith('*') else ' '}{', '.join(ns)};"
+                 for i, ns in zip(order, names)]
+        return "\n".join(lines[:top[0]] + block + lines[top[-1] + 1:])
+
+    total = math.factorial(len(parts)) * math.prod(math.factorial(len(p[2])) for p in parts)
+    if total <= limit:
+        out = []
+        for order in itertools.permutations(range(len(parts))):
+            for names in itertools.product(*[itertools.permutations(parts[i][2]) for i in order]):
+                out.append(render(order, names))
+        return out
+    out, seen = [body], set()
+    tries = 0
+    while len(out) < limit and tries < limit * 20:
+        tries += 1
+        order = list(range(len(parts)))
+        rng.shuffle(order)
+        names = []
+        for i in order:
+            ns = list(parts[i][2])
+            rng.shuffle(ns)
+            names.append(tuple(ns))
+        key = (tuple(order), tuple(names))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(render(order, names))
     return out
 
 
