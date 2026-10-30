@@ -5,6 +5,7 @@
 Appends a section with a copy of the import directory plus one more entry,
 for Init() from <name>.dll (game.name in project.toml), and points the import directory at it.
 Windows then loads the DLL before the game starts. Nothing else changes.
+With game.format = "le", patch_le.py patches instead.
 """
 import os, struct, sys
 
@@ -19,6 +20,9 @@ def align(n, a):
 
 
 def main():
+    if project.FORMAT == "le":
+        import patch_le
+        return patch_le.main()
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     patch(*sys.argv[1:])

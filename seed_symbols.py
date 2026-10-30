@@ -16,6 +16,7 @@ code calls through the game's own imports and `just compare` checks
 which import each call uses.
 
 Of existing rows, only an empty size is filled in, from Ghidra's.
+With game.format = "le", seed_symbols_le.py seeds instead.
 """
 import csv, glob, os, re, struct, subprocess, sys
 
@@ -78,6 +79,9 @@ def import_symbols(dlls):
 
 
 def main():
+    if project.FORMAT == "le":
+        import seed_symbols_le
+        return seed_symbols_le.main()
     os.chdir(ROOT)
     src = sys.argv[1] if len(sys.argv) > 1 else project.config["ghidra"]["functions"]
     path = "config/symbols.csv"
