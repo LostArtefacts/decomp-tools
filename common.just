@@ -43,10 +43,10 @@ run *steps: game
 run-orig *steps: _le game
     python3 tools/play.py --orig "$@"
 
-# Link the standalone build/<name>.exe (no DLL; FEAT=a,b adds features); with STEPS, run it like `run`
+# Link the standalone build/<name>.exe (le: <name>_standalone.exe; no DLL; FEAT=a,b adds features); with STEPS, run it like `run`
 [positional-arguments]
-exe *steps: _pe game
-    python3 tools/build.py exe
+exe *steps: game
+    if [ "$(python3 tools/project.py get game.format)" = le ]; then python3 tools/link_le.py; else python3 tools/build.py exe; fi
     python3 tools/project.py standalone
     if [ $# -gt 0 ]; then python3 tools/play.py --standalone "$@"; fi
 

@@ -169,15 +169,17 @@ NAME = config["game"]["name"]
 ORIGINAL = config["game"]["original"]  # the original exe, copied to an ASCII name
 GAME_END = config["game"]["game_end"]  # the game's code ends here; libraries follow
 DLL = f"build/{NAME}.dll"
-EXE = f"build/{NAME}.exe"
+FORMAT = config["game"]["format"]
+# The standalone exe (le: build/<name>.exe is the original, so <name>_standalone.exe)
+EXE = f"build/{NAME}_standalone.exe" if FORMAT == "le" else f"build/{NAME}.exe"
 EXE_MAP = f"build/{NAME}_exe.map"  # the DLL's map is build/<name>.map
 GAME = "build/game"  # a runnable copy of the game
-FORMAT = config["game"]["format"]
 TOOLCHAIN = config["build"]["toolchain"]
 CODE = tuple(config["game"]["code"])  # le
 ELF = f"build/{NAME}.elf"  # le: the flattened original
 FUNCTIONS = "build/functions.csv"  # le: functions.py's function starts
 HOOKED = os.path.join(GAME, config["game"]["hooked"])  # le
+STANDALONE_LE = "STANDALN.EXE"  # le: the standalone exe's name in DOSBox
 
 
 def get(key):
@@ -276,9 +278,14 @@ def game_le():
 
 
 def standalone():
-    """Copies the standalone exe into build/game as <name>_standalone.exe,
-    with game.standalone_extras."""
-    shutil.copyfile(EXE, os.path.join(GAME, f"{NAME}_standalone.exe"))
+    """Copies the standalone exe into build/game as <name>_standalone.exe
+    (le: as STANDALONE_LE next to game.hooked, a DOS 8.3 name), with
+    game.standalone_extras."""
+    if FORMAT == "le":
+        dest = os.path.join(os.path.dirname(HOOKED), STANDALONE_LE)
+    else:
+        dest = os.path.join(GAME, f"{NAME}_standalone.exe")
+    shutil.copyfile(EXE, dest)
     for pattern in config["game"]["standalone_extras"]:
         for path in sorted(glob.glob(pattern)):
             shutil.copy(path, GAME)
@@ -286,7 +293,7 @@ def standalone():
 
 def clean():
     if FORMAT == "le":
-        paths = ["build/obj", GAME, "build/shots", *glob.glob(f"build/{NAME}.*")]
+        paths = ["build/obj", "build/link", GAME, "build/shots", EXE, *glob.glob(f"build/{NAME}.*")]
     else:
         paths = ["build/src", GAME, *glob.glob("build/obj*"), *glob.glob(f"build/{NAME}.*"),
                  *glob.glob(f"build/{NAME}_exe.*")]

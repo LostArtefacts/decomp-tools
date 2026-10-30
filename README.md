@@ -82,9 +82,16 @@ tools/        this repository
 
 `game.format` in `project.toml` picks the backend: `pe` (the default)
 for the Windows games, `le` for the DOS one. A DOS game has no hook
-DLL, standalone exe or Wine prefix with the toolchain: `src/` holds
-`.c` and `.asm` files only, `build/obj/` the OMF objects, and Watcom
-and MASM are found on the host (see `[build]`).
+DLL or Wine prefix with the toolchain: `src/` holds `.c` and `.asm`
+files only, `build/obj/` the OMF objects, and Watcom and MASM are found
+on the host (see `[build]`). Its standalone exe is
+`build/<name>_standalone.exe` (`build/<name>.exe` is the original),
+which wlink links from `build/obj/` and the parts of the original
+`src/` does not provide yet: `link_le.py` cuts those out of the user's
+original into generated OMF objects in `build/link/`, with the
+original's fixups, so nothing of the original is tracked. `just exe`
+copies it into `build/game/` next to `game.hooked` as `STANDALN.EXE`,
+and `play.py --standalone` runs it in DOSBox.
 
 `examples/tr2.toml` is tr02's configuration, `examples/tr1.toml`
 tr01's. To add the tools to a game
@@ -107,7 +114,7 @@ just tools-init hooks
 | `compare [SYMBOL...]` | compare every compiled function with the original; disassembly diffs for SYMBOLs |
 | `game` | set up `build/game/`: the game's files, an exe patched to load the DLL, the DLL |
 | `run [STEP...]` | run the patched game headless (`wait:S key:K hold:K:S shot:NAME`) |
-| `exe [STEP...]` | link the standalone `build/<name>.exe`; `FEAT=a,b` turns on features |
+| `exe [STEP...]` | link the standalone `build/<name>.exe` (le: `build/<name>_standalone.exe`); `FEAT=a,b` turns on features |
 | `compare-exe [-v]` | compare the standalone exe with the original, section by section |
 | `dxsdk INSTALLER` | install a DirectX SDK's headers and libraries into the prefix (`C:\dx5`) |
 | `analyze` | analyze the original with headless Ghidra, create the functions `config/symbols.csv` lists that it missed, seed `config/symbols.csv`; `le`: list the function starts (`functions.py`) and add Watcom's `__watcall` convention first |
@@ -194,6 +201,7 @@ and `seed_symbols.py` hand over to with `game.format = "le"`:
 | `build_watcom.py` | compiles `src/*.c` with `wcc386` and assembles `src/*.asm` with MASM `ML` under Wine |
 | `compare_le.py` | compares OMF objects with the LE image function by function, every fixup resolved; places and compares the data segments |
 | `patch_le.py` | hooks the compiled functions into a copy of the original as a new object |
+| `link_le.py` | links the standalone exe with wlink: the objects in the original's order, the rest of the original cut into generated OMF objects |
 | `seed_symbols_le.py` | adds Ghidra's functions to `symbols.csv` and names Watcom's library functions by fingerprint |
 | `functions.py` | lists function starts in the flattened executable |
 | `bss.py` | models `wcc386`'s `_BSS` layout (needs pycparser) |

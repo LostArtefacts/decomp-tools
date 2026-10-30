@@ -1,7 +1,7 @@
 """Runs the patched game, headless under Xvfb, and drives it with keys.
 
     play.py [--exe NAME | --standalone] [STEP...]
-    play.py [--exe NAME | --orig] [STEP...]      game.format = "le"
+    play.py [--exe NAME | --orig | --standalone] [STEP...]  game.format = "le"
 
 Steps run in order:
 
@@ -12,7 +12,8 @@ Steps run in order:
 
 --exe runs build/game/NAME instead of the patched <name>.exe, and
 --standalone the standalone build, <name>_standalone.exe there (<name>
-is game.name in project.toml). With no steps the game starts on a fresh
+is game.name in project.toml; le: STANDALN.EXE next to game.hooked, in
+DOSBox). With no steps the game starts on a fresh
 Xvfb display, and a screenshot is taken after 15 seconds. The hook log
 from the DLL is printed. Needs Xvfb, xdotool and ImageMagick. game.locale
 sets the game's locale (ja_JP.UTF-8 for a game that expects Shift-JIS
@@ -150,6 +151,8 @@ def main_dosbox():
     elif args[:1] == ["--orig"]:
         exe, args = "ORIG.EXE", args[1:]
         shutil.copyfile(os.path.join(ROOT, project.ORIGINAL), os.path.join(GAME, folder, exe))
+    elif args[:1] == ["--standalone"]:
+        exe, args = project.STANDALONE_LE, args[1:]
     steps = args or ["wait:20", "shot:start"]
     conf = os.path.join(GAME, "dosbox.conf")
     with open(conf, "w") as f:
