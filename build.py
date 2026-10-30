@@ -45,6 +45,8 @@ OBJ = "build/obj"  # the DLL's, which compare.py reads
 OBJ_EXE = EXE_CONFIG["obj_dir"]  # the vanilla standalone exe's
 CONVERTED = "build/src"  # src/ converted to build.encoding
 ENCODING = BUILD["encoding"]
+CRLF = BUILD["crlf"]
+LINE_ENDINGS = ["crlf"] if CRLF else []  # recorded with the flags, so a switch rebuilds
 SOURCE_EXTS = (".c", ".cpp", ".s", ".asm")  # what gets built; headers and the rest are only converted
 ASM_EXTS = (".s", ".asm")  # assembled with build.ml and build.asflags
 DLL = project.DLL
@@ -176,12 +178,15 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
     os.makedirs(obj_dir, exist_ok=True)
     for src in glob.glob("src/**/*.*", recursive=True):
         copy = os.path.join(CONVERTED, os.path.relpath(src, "src"))
-        if not os.path.exists(copy) or os.path.getmtime(copy) < os.path.getmtime(src):
+        with open(src, encoding="utf-8") as f:
+            text = f.read()
+        if CRLF:
+            text = text.replace("\n", "\r\n")
+        data = encode(text)
+        if not os.path.exists(copy) or open(copy, "rb").read() != data:
             os.makedirs(os.path.dirname(copy), exist_ok=True)
-            with open(src, encoding="utf-8") as f:
-                text = f.read()
             with open(copy, "wb") as f:
-                f.write(encode(text))
+                f.write(data)
     more = hook("headers")
     headers = max((os.path.getmtime(h) for h in glob.glob("src/**/*.h", recursive=True)
                    + (list(more()) if more else []) if os.path.exists(h)), default=0)
@@ -196,7 +201,7 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
         objs.append(obj)
         flags = file_flags(src, base) + defines
         if not (os.path.exists(obj) and os.path.getmtime(obj) > max(os.path.getmtime(src), headers)
-                and built.get(obj) == flags):
+                and built.get(obj) == flags + LINE_ENDINGS):
             stale.append((src, obj, flags))
 
     def compile_one(job):
@@ -217,7 +222,7 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
                 built.pop(obj, None)
                 failed = failed or code
             else:
-                built[obj] = flags
+                built[obj] = flags + LINE_ENDINGS
     with open(record, "w") as f:
         json.dump(built, f, indent=1, sort_keys=True)
     if failed:

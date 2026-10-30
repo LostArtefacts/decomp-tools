@@ -179,6 +179,7 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | --- | --- | --- |
 | `cflags` | required | the compiler flags; a source file's first line `// cflags: /Os -/Oi` or `/* cflags: ... */` adds and removes some |
 | `encoding` | `cp1252` | the code page `src/`'s UTF-8 is converted to before `cl` reads it; with `cp932` a second byte of `\` is doubled |
+| `crlf` | `false` | convert `src/`'s LF line endings to CRLF before `cl` reads it: VC++ 5 can allocate registers differently for the same code by line endings; switching it rebuilds everything |
 | `bin` | `C:\msvc5\bin` | where `cl.exe` and `link.exe` are, in the Wine prefix |
 | `include` | `C:\dx5\include`, `C:\msvc5\include` | `INCLUDE` |
 | `lib` | `C:\dx5\lib`, `C:\msvc5\lib` | `LIB`, in search order |
