@@ -15,7 +15,9 @@ config/ must have no unstaged changes, so what is built is what is
 committed.
 
 hooks.one_function allows at most one newly matching function per
-commit. The functions that matched before are the ones HEAD's
+commit, or two with hooks.pairs, for two functions that only match
+together; such a commit's subject is `Decompile A and B`, in address
+order. The functions that matched before are the ones HEAD's
 docs/progress.svg shows as matching, so it needs hooks.progress. A
 commit that adds one has the subject `Decompile NAME (0xADDRESS)`, with
 the function's name and address from config/symbols.csv; any other
@@ -133,6 +135,12 @@ def commit_msg(message_file):
     os.remove(path)
     with open(message_file, encoding="utf-8") as f:
         subject = next((l.strip() for l in f if l.strip() and not l.startswith("#")), "")
+    if len(new) == 2 and HOOKS["pairs"]:
+        want = f"Decompile {new[0][1]} and {new[1][1]}"
+        if subject != want:
+            print(f"commit-msg: the commit decompiles a pair; its subject must be: {want}")
+            return 1
+        return 0
     if len(new) > 1:
         print(f"commit-msg: {len(new)} functions newly match; commit one function at a time:")
         for address, name in new:

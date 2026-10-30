@@ -101,6 +101,7 @@ DEFAULTS = {
         "progress": False,  # pre-commit redraws docs/progress.svg
         "compare": False,  # pre-commit fails unless every compiled function matches
         "one_function": False,  # one newly matching function per commit, named in the subject
+        "pairs": False,  # with one_function, a commit may make two functions match: "Decompile A and B"
         "no_comments": False,  # pre-commit fails on comments, tabs or CRs in staged src/ files
     },
     "reference": {

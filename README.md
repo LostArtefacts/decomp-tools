@@ -309,6 +309,7 @@ compiles and `fn.py` reads.
 | `hooks.progress` | `false` | the pre-commit hook redraws `docs/progress.svg` and adds it |
 | `hooks.compare` | `false` | the pre-commit hook fails unless every compiled function matches the original byte for byte |
 | `hooks.one_function` | `false` | a commit makes at most one more function match, and then its subject is `Decompile NAME (0xADDRESS)`; needs `hooks.progress` |
+| `hooks.pairs` | `false` | with `hooks.one_function`, a commit may make two functions match when they only match together; its subject is then `Decompile A and B`, in address order |
 | `hooks.no_comments` | `false` | the pre-commit hook fails when a staged file in `src/` (outside `src/dll/`) holds a comment, a tab or a carriage return |
 | `tools.remote` | `git@github.com:LostArtefacts/decomp-tools.git` | where `tools-push` pushes, over SSH |
 
