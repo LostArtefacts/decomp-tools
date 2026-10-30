@@ -5,6 +5,10 @@ them on.
     gate.py commit-msg FILE  hooks.one_function: the commit's subject names
                              the one function it decompiles
 
+hooks.no_comments fails the commit when a staged file in src/ holds a
+comment, a tab or a carriage return, so nothing is ported from a
+reference's source as is. src/dll/, the DLL's own code, is exempt.
+
 hooks.compare builds src/ and fails the commit unless every function it
 defines matches the original byte for byte (`just compare`). src/ and
 config/ must have no unstaged changes, so what is built is what is
@@ -56,10 +60,35 @@ def matched_at_head():
         return {a for a, same in render_progress.built_from_svg(f.name).items() if same}
 
 
+def strip_strings(text):
+    return re.sub(r'"(\\.|[^"\\\n])*"|\'(\\.|[^\'\\\n])*\'', '""', text)
+
+
+def commented():
+    """The staged src/ files with comments, tabs or CRs, and why."""
+    staged = git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "src").stdout.split()
+    bad = []
+    for name in staged:
+        if name.startswith("src/dll/") or not name.endswith((".c", ".cpp", ".h", ".hpp")):
+            continue
+        text = git("show", f":{name}").stdout
+        why = [w for w, hit in (("comments", any(c in strip_strings(text) for c in ("/*", "//"))),
+                                ("tabs", "\t" in text), ("CRs", "\r" in text)) if hit]
+        if why:
+            bad.append(f"  {name}: {', '.join(why)}")
+    return bad
+
+
 def pre_commit():
     path = marker()
     if os.path.exists(path):
         os.remove(path)
+    if HOOKS.get("no_comments"):
+        bad = commented()
+        if bad:
+            print("pre-commit: src/ takes no comments, tabs or CRs (hooks.no_comments):")
+            print("\n".join(bad))
+            return 1
     if not HOOKS["compare"] and not HOOKS["one_function"]:
         return 0
     if git("diff", "--quiet", "--", "src", "config", check=False).returncode:

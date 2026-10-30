@@ -75,6 +75,7 @@ DEFAULTS = {
         "progress": False,  # pre-commit redraws docs/progress.svg
         "compare": False,  # pre-commit fails unless every compiled function matches
         "one_function": False,  # one newly matching function per commit, named in the subject
+        "no_comments": False,  # pre-commit fails on comments, tabs or CRs in staged src/ files
     },
     "tools": {
         "remote": "git@github.com:LostArtefacts/decomp-tools.git",  # where `just tools-push` pushes
