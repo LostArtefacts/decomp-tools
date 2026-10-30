@@ -217,7 +217,8 @@ class Scorer:
         self.name, self.src, self.text, self.start, self.end = name, src, text, start, end
         self.symbols = compare.read_symbols()
         row = next(r for r in compare_rows() if r["name"] == name)
-        self.symbol = row["symbol"].split()[0]
+        self.symbol_names = row["symbol"].split()
+        self.symbol = self.symbol_names[0]
         self.addr, self.size = self.symbols[self.symbol]
         self.orig = coff.Image(os.path.join(ROOT, compare.EXE)).read(self.addr, self.size)
         self.orig_asm = compare.disasm(self.orig, self.addr)
@@ -242,21 +243,24 @@ class Scorer:
         with open(conv, "wb") as f:
             f.write(build.encode(text))
         try:
-            code, _ = build.run_tool("cl", "/c", *self.flags, "/I" + build.win(build.CONVERTED),
+            code, out = build.run_tool("cl", "/c", *self.flags, "/I" + build.win(build.CONVERTED),
                                      "/Fo" + build.win(obj), build.win(conv))
         finally:
             os.remove(conv)
         if code or not os.path.exists(obj):
+            self.why = "cl failed:\n" + "\n".join(l for l in out.splitlines() if "error" in l)[:1500]
             return None
         with COMPARE_LOCK:
             saved = build.sources
             try:
                 build.sources = lambda *a, **kw: [(self.src, obj)]
-                res = [r for r in compare.results(self.symbols) if r[0] == self.symbol]
+                res = [r for r in compare.results(self.symbols) if r[0] in self.symbol_names]
             finally:
                 build.sources = saved
                 os.remove(obj)
         if not res:
+            self.why = (f"compiled, but the object defines none of {' '.join(self.symbol_names)} (symbols.csv's "
+                        f"symbols for {self.name}): check the function's linkage, extern \"C\" or C++")
             return None
         _, same, code_bytes, mask, orig, diffs = res[0]
         if same:
@@ -342,7 +346,7 @@ def main():
     base = text[start:end]
     first = s.score(base)
     if first is None:
-        sys.exit("the function doesn't compile as it is")
+        sys.exit("the function doesn't build as it is: " + getattr(s, "why", "unknown reason"))
     print(f"{args.name}: {src}, score {first} as written", flush=True)
     if first == 0:
         print("already matches")
