@@ -9,10 +9,16 @@
 # Merges and the commits git subtree writes keep the messages git makes
 # for them ("Merge commit '<sha>' as 'tools'" is over 50 characters), so
 # they skip the length and prefix rules; the trailer rule still applies.
+# A subject naming a decompiled function, `Decompile NAME (0xADDRESS)` or
+# `Decompile A and B`, may run over 50 characters, since the name fixes
+# its length.
 import os, re, subprocess, sys
 
 SUBTREE = re.compile(r"(Merge commit '[0-9a-f]+'( as '[^']+')?|Add '[^']+/' from commit '[0-9a-f]+'"
                      r"|Squashed '[^']+' (content from commit|changes from [0-9a-f]+\.\.) ?[0-9a-f]+)$")
+
+
+DECOMPILE = re.compile(r"Decompile [\w@?$]+ (\(0x[0-9a-fA-F]+\)|and [\w@?$]+)$")
 
 
 def merging():
@@ -32,7 +38,7 @@ while lines and not lines[0]:
 
 errors = []
 git_made = bool(lines) and (merging() or SUBTREE.match(lines[0]))
-if lines and len(lines[0]) > 50 and not git_made:
+if lines and len(lines[0]) > 50 and not git_made and not DECOMPILE.match(lines[0]):
     errors.append(f"subject is {len(lines[0])} characters, over 50: {lines[0]}")
 if lines and re.match(r"[\w-]+(\([^)]*\))?!?: ", lines[0]) and not git_made:
     errors.append(f"subject has a type prefix: {lines[0]}")

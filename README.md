@@ -128,7 +128,7 @@ just tools-init hooks
 | `fn NAME [-d\|-g\|-a]`, `fn --next [N]` | one function: target file, the reference's definition and what `src/` lacks; its diff; Ghidra's version; what to do next |
 | `permute NAME [-j N] [-t S]` | search source variants of a function for a byte match |
 | `progress` | render `docs/progress.svg` |
-| `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers, and the game's commit rules (see `[hooks]`) |
+| `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers (a `Decompile` subject may run over 50 for a long name), and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
 
 They dispatch on `game.format`. With `le`, `build` only compiles into
