@@ -46,7 +46,8 @@ OBJ_EXE = EXE_CONFIG["obj_dir"]  # the vanilla standalone exe's
 CONVERTED = "build/src"  # src/ converted to build.encoding
 ENCODING = BUILD["encoding"]
 CRLF = BUILD["crlf"]
-LINE_ENDINGS = ["crlf"] if CRLF else []  # recorded with the flags, so a switch rebuilds
+# Recorded with each object's flags, so switching either rebuilds it.
+RECORDED = [BUILD["bin"]] + (["crlf"] if CRLF else [])
 SOURCE_EXTS = (".c", ".cpp", ".s", ".asm")  # what gets built; headers and the rest are only converted
 ASM_EXTS = (".s", ".asm")  # assembled with build.ml and build.asflags
 DLL = project.DLL
@@ -201,7 +202,7 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
         objs.append(obj)
         flags = file_flags(src, base) + defines
         if not (os.path.exists(obj) and os.path.getmtime(obj) > max(os.path.getmtime(src), headers)
-                and built.get(obj) == flags + LINE_ENDINGS):
+                and built.get(obj) == flags + RECORDED):
             stale.append((src, obj, flags))
 
     def compile_one(job):
@@ -222,7 +223,7 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
                 built.pop(obj, None)
                 failed = failed or code
             else:
-                built[obj] = flags + LINE_ENDINGS
+                built[obj] = flags + RECORDED
     with open(record, "w") as f:
         json.dump(built, f, indent=1, sort_keys=True)
     if failed:
