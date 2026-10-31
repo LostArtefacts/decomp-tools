@@ -374,7 +374,7 @@ def main():
     tried = 0
 
     if args.decls and best_score:
-        cands = declaration_orders(base, args.limit, rng)[1:]
+        cands = declaration_orders(best, args.limit, rng)[1:]
         print(f"{len(cands)} declaration orders to try", flush=True)
         step = args.j * 4
         with ThreadPoolExecutor(args.j) as pool:
