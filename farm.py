@@ -9,7 +9,8 @@ src/ that don't match yet. Each round runs every function still
 unmatched through a random search of -t seconds with a fresh seed,
 starting from the best variant so far (build/permute/NAME.c), after
 `permute.py NAME --decls` on that variant whenever it changed since the
-last one, PARALLEL functions at a time with JOBS compiles each. Logs go to build/farm/NAME.log, and a body that matches
+last one, PARALLEL functions at a time with JOBS compiles each. Logs go to build/farm/NAME.log, and every lower score is
+printed as it is found; a body that matches
 is kept as build/farm/NAME.c. -r 0 runs rounds until every function
 matches or the farm is stopped; a stopped farm keeps what it found.
 
@@ -20,7 +21,7 @@ machine from a copy of the repository: copy build/farm/*.c back.
 Build and compare after it, since a body can flip other functions, then
 commit each one, taking it off hooks.allow_diff in that commit.
 """
-import argparse, glob, os, random, subprocess, sys
+import argparse, glob, os, random, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 import project
@@ -47,7 +48,18 @@ def search(name, args, seed):
     for extra in steps:
         log.write(f"== {' '.join(extra)}\n")
         log.flush()
-        done = subprocess.run(permute + extra, stdout=log, stderr=subprocess.STDOUT)
+        run = subprocess.Popen(permute + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, errors="replace")
+        for line in run.stdout:
+            log.write(line)
+            log.flush()
+            score = re.match(r"\s+\d+ tries: score (\d+)$", line)
+            start = re.match(r"(starting from) .*, (score \d+)$|.*, (score \d+) (as written)$", line)
+            if score:
+                print(f"{name}: score {score[1]} ({extra[0]})", flush=True)
+            elif start:
+                print(f"{name}: {' '.join(g for g in start.groups() if g)}", flush=True)
+        done = subprocess.CompletedProcess(run.args, run.wait())
         if extra[0] == "--decls" and os.path.exists(best):
             open(marker, "w").write(open(best).read())
         if done.returncode == 0:
