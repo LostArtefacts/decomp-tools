@@ -13,7 +13,8 @@ config/symbols.csv, limited to the game code; their status from the build:
 - todo:        everything else
 
 Run it after a build (`just progress` does both). It prints one line: a
-bar of the bytes matched, and how many functions and bytes match.
+bar of the bytes matched and of the ones that don't match yet, and
+how many functions and bytes match.
 
     render_progress.py --from-svg OLD [--root DIR] [OUTPUT]
 
@@ -809,19 +810,25 @@ class ProgressSVG(Container):
 
 
 def summary(functions: list[Symbol], width: int, data: tuple[int, int] | None = None) -> str:
-    """One line: a bar of the bytes matched, and the counts, no wider
-    than `width`."""
+    """One line: a bar of the bytes matched (\u2588) and of the ones in
+    src/ that don't match yet (\u2592), and the counts, no wider than
+    `width`."""
     done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
+    red = [f for f in functions if f.status == SymbolStatus.NONMATCHING]
     total = sum(f.size for f in functions) or 1
     size = sum(f.size for f in done)
+    differ = sum(f.size for f in red)
     tail = (f" {100 * size / total:.1f}%  {len(done)}/{len(functions)} functions  "
             f"{size / 1000:.0f}k/{total / 1000:.0f}k bytes")
+    if red:
+        tail += f"  +{100 * differ / total:.1f}% nonmatching ({len(red)})"
     if data:
         tail += f"  {data[0]}/{data[1]} data"
     head = f"{TITLE if LE else project.config['game']['exe']}  "
     bar = max(min(20, width - len(head) - len(tail)), 5)
     full = round(bar * size / total)
-    return head + "\u2588" * full + "\u2591" * (bar - full) + tail
+    part = min(round(bar * (size + differ) / total), bar) - full
+    return head + "\u2588" * full + "\u2592" * part + "\u2591" * (bar - full - part) + tail
 
 
 def main() -> None:
