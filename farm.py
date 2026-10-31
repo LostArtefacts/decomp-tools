@@ -6,9 +6,10 @@ the matches it finds.
 
 The functions default to project.toml's hooks.allow_diff, the ones in
 src/ that don't match yet. Each round runs every function still
-unmatched through `permute.py NAME --decls`, then a random search of -t
-seconds with a fresh seed, PARALLEL functions at a time with JOBS
-compiles each. Logs go to build/farm/NAME.log, and a body that matches
+unmatched through a random search of -t seconds with a fresh seed,
+starting from the best variant so far (build/permute/NAME.c), after
+`permute.py NAME --decls` the first time, PARALLEL functions at a time
+with JOBS compiles each. Logs go to build/farm/NAME.log, and a body that matches
 is kept as build/farm/NAME.c. -r 0 runs rounds until every function
 matches or the farm is stopped; a stopped farm keeps what it found.
 
@@ -37,12 +38,16 @@ def found(name):
 def search(name, args, seed):
     log = open(os.path.join(OUT, f"{name}.log"), "a")
     permute = [sys.executable, os.path.join(HERE, "permute.py"), name, "-j", str(args.j)]
-    for extra in (["--decls"], ["-t", str(args.t), "-s", str(seed)]):
+    best = os.path.join("build/permute", f"{name}.c")
+    steps = [["-t", str(args.t), "-s", str(seed), "--start", best]]
+    if not os.path.exists(best):
+        steps.insert(0, ["--decls"])
+    for extra in steps:
         log.write(f"== {' '.join(extra)}\n")
         log.flush()
         done = subprocess.run(permute + extra, stdout=log, stderr=subprocess.STDOUT)
         if done.returncode == 0:
-            body = open(os.path.join("build/permute", f"{name}.c")).read()
+            body = open(best).read()
             open(found(name), "w").write(body)
             print(f"{name}: MATCH", flush=True)
             return True

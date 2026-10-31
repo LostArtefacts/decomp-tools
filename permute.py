@@ -3,6 +3,9 @@
     permute.py NAME [-j JOBS] [-t SECONDS] [-s SEED]
     permute.py NAME --decls [-j JOBS] [--limit N]
 
+--start FILE searches from the variant in FILE instead, when it builds
+and scores better than the definition in src/.
+
 NAME must already be defined in src/ and build. The permuter takes its
 definition, applies random rewrites (reordering local declarations,
 swapping the operands of commutative operators, comparisons, && and ||,
@@ -39,6 +42,12 @@ OUT = "build/permute"
 COMPARE_LOCK = threading.Lock()  # results() reads build.sources, patched per call
 COMMUTATIVE = ["+", "*", "&", "|", "^", "==", "!="]
 FLIPPED = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}
+
+
+def keep(name, body):
+    """Writes the best variant so far, so a stopped search keeps it."""
+    os.makedirs(OUT, exist_ok=True)
+    open(os.path.join(OUT, f"{name}.c"), "w").write(body)
 
 
 def find_function(name):
@@ -339,6 +348,7 @@ def main():
     ap.add_argument("-s", type=int, default=None)
     ap.add_argument("--decls", action="store_true", help="search declaration orders exhaustively")
     ap.add_argument("--limit", type=int, default=3000, help="--decls: most candidates to try")
+    ap.add_argument("--start", help="a variant to search from, such as an earlier run's best")
     args = ap.parse_args()
     build.compile_all()
     src, text, start, end = find_function(args.name)
@@ -353,11 +363,17 @@ def main():
         return 0
     rng = random.Random(args.s)
     best, best_score = base, first
-    cur, cur_score = base, first
-    deadline = time.time() + args.t
+    if args.start and os.path.exists(args.start):
+        seed = open(args.start, encoding="utf-8").read()
+        score = s.score(seed)
+        if score is not None and score < best_score:
+            best, best_score = seed, score
+            print(f"starting from {args.start}, score {score}", flush=True)
+    cur, cur_score = best, best_score
+    deadline = time.time() + args.t if best_score else 0
     tried = 0
 
-    if args.decls:
+    if args.decls and best_score:
         cands = declaration_orders(base, args.limit, rng)[1:]
         print(f"{len(cands)} declaration orders to try", flush=True)
         step = args.j * 4
@@ -369,6 +385,7 @@ def main():
                     if sc is not None and sc < best_score:
                         best, best_score = body, sc
                         print(f"  {tried:5d} tries: score {sc}", flush=True)
+                        keep(args.name, best)
                 if best_score == 0:
                     break
         deadline = 0
@@ -391,6 +408,7 @@ def main():
                 if sc < best_score:
                     best, best_score = body, sc
                     print(f"  {tried:5d} tries: score {sc}", flush=True)
+                    keep(args.name, best)
                 if sc <= cur_score or rng.random() < 0.05:
                     cur, cur_score = body, sc
             if rng.random() < 0.02:
