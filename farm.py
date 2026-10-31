@@ -45,7 +45,9 @@ def search(name, args, seed):
     steps = [["-t", str(args.t), "-s", str(seed), "--start", best]]
     if body is None or not os.path.exists(marker) or open(marker).read() != body:
         steps.insert(0, ["--decls", "--start", best])
+    written = current = None
     for extra in steps:
+        kind = "declaration orders" if extra[0] == "--decls" else "random search"
         log.write(f"== {' '.join(extra)}\n")
         log.flush()
         run = subprocess.Popen(permute + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -53,21 +55,26 @@ def search(name, args, seed):
         for line in run.stdout:
             log.write(line)
             log.flush()
-            score = re.match(r"\s+\d+ tries: score (\d+)$", line)
-            start = re.match(r"(starting from) .*, (score \d+)$|.*, (score \d+) (as written)$", line)
-            if score:
-                print(f"{name}: score {score[1]} ({extra[0]})", flush=True)
-            elif start:
-                print(f"{name}: {' '.join(g for g in start.groups() if g)}", flush=True)
+            m = re.match(r".*, score (\d+) as written$", line)
+            if m:
+                written = int(m[1])
+                current = current if current is not None else written
+            m = re.match(r"starting from .*, score (\d+)$", line)
+            if m:
+                current = min(current, int(m[1])) if current is not None else int(m[1])
+            m = re.match(r"\s+\d+ tries: score (\d+)$", line)
+            if m and (current is None or int(m[1]) < current):
+                print(f"{name}: {current} -> {m[1]} ({kind})", flush=True)
+                current = int(m[1])
         done = subprocess.CompletedProcess(run.args, run.wait())
         if extra[0] == "--decls" and os.path.exists(best):
             open(marker, "w").write(open(best).read())
         if done.returncode == 0:
             body = open(best).read()
             open(found(name), "w").write(body)
-            print(f"{name}: MATCH", flush=True)
+            print(f"{name}: MATCH ({written} in src/)", flush=True)
             return True
-    print(f"{name}: no match yet", flush=True)
+    print(f"{name}: no match this round, best {current} ({written} in src/)", flush=True)
     return False
 
 
