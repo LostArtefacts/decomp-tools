@@ -26,6 +26,12 @@ the function's name and address from config/symbols.csv; any other
 commit has a subject that doesn't start with `Decompile `. Amending a
 commit with the same subject passes.
 
+A group of functions that only match together lands one function per
+commit with DECOMP_ALLOW_DIFF=NAME[,NAME...] in the environment: the
+named functions may differ in that commit (the neighbour the group
+breaks until it is complete), and when they match again they don't
+count as newly matching.
+
 pre-commit leaves the newly matching functions in the git directory for
 commit-msg, which runs after it. `git commit --no-verify` skips both.
 """
@@ -113,6 +119,11 @@ def pre_commit():
             matched.add(names[name][0])
         else:
             differ.append(name)
+    allowed = set(os.environ.get("DECOMP_ALLOW_DIFF", "").replace(",", " ").split())
+    excused = [name for name in differ if names[name][1] in allowed]
+    differ = [name for name in differ if names[name][1] not in allowed]
+    for name in excused:
+        print(f"pre-commit: {names[name][1]} differs, allowed by DECOMP_ALLOW_DIFF")
     if HOOKS["compare"] and differ:
         print("pre-commit: these functions don't match the original (just compare):")
         for name in differ:
@@ -122,7 +133,7 @@ def pre_commit():
         before = matched_at_head()
         if before is not None:
             by_address = {a: n for a, n in names.values()}
-            new = sorted(matched - before)
+            new = sorted(a for a in matched - before if by_address[a] not in allowed)
             with open(path, "w") as f:
                 for address in new:
                     f.write(f"{address:#x} {by_address[address]}\n")
