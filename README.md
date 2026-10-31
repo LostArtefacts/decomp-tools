@@ -192,6 +192,7 @@ puts it on `main` at the same commit.
 | `probe.py` | compiles `reference.source` as its project file builds it and scores each function against the original |
 | `fn.py` | everything about one function in one call, and the order to do them in |
 | `permute.py` | searches rewrites of one function (declaration order, operand order, statement order, if/else) for a byte match, compiling each variant alone |
+| `farm.py` | runs permute.py over every hooks.allow_diff function, several at once, unattended; keeps matching bodies in build/farm, and `--apply` writes them into src/ |
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 
