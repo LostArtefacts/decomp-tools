@@ -12,9 +12,9 @@ config/symbols.csv, limited to the game code; their status from the build:
 - nonmatching: defined in src/, not matching yet
 - todo:        everything else
 
-Run it after a build (`just progress` does both). It prints one line: a
-bar of the bytes matched and of the ones that don't match yet, and
-how many functions and bytes match.
+Run it after a build (`just progress` does both). It prints three
+lines: a bar of the functions and one of the bytes, matched and not
+matching yet, then how many functions and bytes match.
 
     render_progress.py --from-svg OLD [--root DIR] [OUTPUT]
 
@@ -810,25 +810,34 @@ class ProgressSVG(Container):
 
 
 def summary(functions: list[Symbol], width: int, data: tuple[int, int] | None = None) -> str:
-    """One line: a bar of the bytes matched (\u2588) and of the ones in
-    src/ that don't match yet (\u2592), and the counts, no wider than
-    `width`."""
+    """Three lines, no wider than `width`: a bar of the functions and one
+    of the bytes, each matched (\u2588) and in src/ but not matching yet
+    (\u2592), then the counts."""
     done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
     red = [f for f in functions if f.status == SymbolStatus.NONMATCHING]
     total = sum(f.size for f in functions) or 1
     size = sum(f.size for f in done)
     differ = sum(f.size for f in red)
-    tail = (f" {100 * size / total:.1f}%  {len(done)}/{len(functions)} functions  "
-            f"{size / 1000:.0f}k/{total / 1000:.0f}k bytes")
+    count = len(functions) or 1
+    name = TITLE if LE else project.config["game"]["exe"]
+    label = max(len(name), len("functions"))
+    bar = max(min(40, width - label - 2), 5)
+
+    def line(title, matched, nonmatching, whole):
+        full = round(bar * matched / whole)
+        part = min(round(bar * (matched + nonmatching) / whole), bar) - full
+        return (f"{title:<{label}}  " + "\u2588" * full + "\u2592" * part
+                + "\u2591" * (bar - full - part))
+
+    text = (f"{name:<{label}}  {100 * size / total:.1f}% of bytes, "
+            f"{100 * len(done) / count:.1f}% of functions match  "
+            f"{len(done)}/{len(functions)} functions  {size / 1000:.0f}k/{total / 1000:.0f}k bytes")
     if red:
-        tail += f"  +{100 * differ / total:.1f}% nonmatching ({len(red)})"
+        text += f"  +{100 * differ / total:.1f}% nonmatching ({len(red)})"
     if data:
-        tail += f"  {data[0]}/{data[1]} data"
-    head = f"{TITLE if LE else project.config['game']['exe']}  "
-    bar = max(min(20, width - len(head) - len(tail)), 5)
-    full = round(bar * size / total)
-    part = min(round(bar * (size + differ) / total), bar) - full
-    return head + "\u2588" * full + "\u2592" * part + "\u2591" * (bar - full - part) + tail
+        text += f"  {data[0]}/{data[1]} data"
+    return "\n".join([line("functions", len(done), len(red), count),
+                      line("bytes", size, differ, total), text])
 
 
 def main() -> None:
