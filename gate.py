@@ -37,6 +37,9 @@ match, such as ones that are logically equivalent but allocate registers
 differently. They may differ in every commit. A commit that adds one to
 the list decompiles it, as if it newly matched: its subject is
 `Decompile NAME (0xADDRESS)`, and it is that commit's one function.
+A function that matched at HEAD and joins the list in a commit that
+decompiles another one is a neighbour the new function broke, and
+doesn't count.
 
 pre-commit leaves the newly matching functions in the git directory for
 commit-msg, which runs after it. `git commit --no-verify` skips both.
@@ -150,7 +153,8 @@ def pre_commit():
         if before is not None:
             by_address = {a: n for a, n in names.values()}
             new = sorted(a for a in matched - before if by_address[a] not in allowed)
-            new += sorted({a for a, n in names.values() if n in listed - allow_diff_at_head()})
+            new += sorted({a for a, n in names.values()
+                           if n in listed - allow_diff_at_head() and a not in before})
             with open(path, "w") as f:
                 for address in new:
                     f.write(f"{address:#x} {by_address[address]}\n")
