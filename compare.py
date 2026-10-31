@@ -10,7 +10,7 @@ string literals, that data is compared with what the original points at.
 
 With game.format = "le", compare_le.py compares instead.
 """
-import csv, os, re, subprocess, sys, tempfile
+import csv, os, re, subprocess, sys, tempfile, shutil
 
 import build, coff, project
 
@@ -102,6 +102,11 @@ def compiled_functions(symbols):
 
 
 def disasm(code, addr):
+    if not shutil.which("objdump"):
+        import capstone
+        cs = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+        return [f"{i.bytes.hex(' ')}\t{i.mnemonic} {i.op_str}".rstrip()
+                for i in cs.disasm(code, addr)]
     with tempfile.NamedTemporaryFile(suffix=".bin") as f:
         f.write(code)
         f.flush()

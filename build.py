@@ -72,12 +72,27 @@ TIMEOUT = BUILD["timeout"]  # cl spins forever after a fatal error
 # free; JOBS overrides it.
 JOBS = int(os.environ.get("JOBS") or max(1, (os.cpu_count() or 2) // 2))
 
+# On Windows the tools run as they are, without wine, and a C:\ path
+# in the build settings is looked up in .wine/drive_c first, so a copy
+# of the wine prefix's drive serves both.
+NATIVE = os.name == "nt"
+
+
+def host(path):
+    """`path`, a Windows path in the build settings, on this machine."""
+    if NATIVE and path[:3].upper() == "C:\\":
+        local = os.path.join(ROOT, ".wine", "drive_c", path[3:])
+        if os.path.exists(local):
+            return local
+    return path
+
+
 ENV = dict(
     os.environ,
     WINEPREFIX=os.environ.get("WINEPREFIX", os.path.join(ROOT, ".wine")),
     WINEDEBUG=os.environ.get("WINEDEBUG", "-all"),
-    INCLUDE=";".join(BUILD["include"]),
-    LIB=";".join(BUILD["lib"]),
+    INCLUDE=";".join(map(host, BUILD["include"])),
+    LIB=";".join(map(host, BUILD["lib"])),
 )
 
 _hook = None
@@ -104,7 +119,7 @@ def run_tool(name, *args):
     """Runs an MSVC tool, or build.ml for "ml"; returns its exit code and
     its output, without the lines that only name the file."""
     exe = BUILD["ml"] if name == "ml" else BUILD["bin"] + "\\" + name + ".exe"
-    cmd = ["wine", exe, "/nologo", *args]
+    cmd = ([] if NATIVE else ["wine"]) + [host(exe), "/nologo", *args]
     try:
         r = subprocess.run(cmd, env=ENV, timeout=TIMEOUT, capture_output=True, text=True, errors="replace")
     except subprocess.TimeoutExpired:
@@ -205,6 +220,7 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
         if not (os.path.exists(obj) and os.path.getmtime(obj) > max(os.path.getmtime(src), headers)
                 and built.get(obj) == flags + RECORDED):
             stale.append((src, obj, flags))
+            os.makedirs(os.path.dirname(obj), exist_ok=True)
 
     def compile_one(job):
         src, obj, flags = job
