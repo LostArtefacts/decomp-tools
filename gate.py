@@ -32,6 +32,12 @@ named functions may differ in that commit (the neighbour the group
 breaks until it is complete), and when they match again they don't
 count as newly matching.
 
+hooks.allow_diff lists functions that are in src/ though they don't
+match, such as ones that are logically equivalent but allocate registers
+differently. They may differ in every commit. A commit that adds one to
+the list decompiles it, as if it newly matched: its subject is
+`Decompile NAME (0xADDRESS)`, and it is that commit's one function.
+
 pre-commit leaves the newly matching functions in the git directory for
 commit-msg, which runs after it. `git commit --no-verify` skips both.
 """
@@ -55,6 +61,15 @@ def marker():
 def rows():
     with open(os.path.join(ROOT, "config/symbols.csv")) as f:
         return {s: (int(r["address"], 16), r["name"]) for r in csv.DictReader(f) for s in r["symbol"].split()}
+
+
+def allow_diff_at_head():
+    """hooks.allow_diff in HEAD's project.toml."""
+    import tomllib
+    shown = git("show", "HEAD:project.toml", check=False)
+    if shown.returncode:
+        return set()
+    return set(tomllib.loads(shown.stdout).get("hooks", {}).get("allow_diff", []))
 
 
 def matched_at_head():
@@ -119,11 +134,12 @@ def pre_commit():
             matched.add(names[name][0])
         else:
             differ.append(name)
-    allowed = set(os.environ.get("DECOMP_ALLOW_DIFF", "").replace(",", " ").split())
+    listed = set(HOOKS["allow_diff"])
+    allowed = set(os.environ.get("DECOMP_ALLOW_DIFF", "").replace(",", " ").split()) | listed
     excused = [name for name in differ if names[name][1] in allowed]
     differ = [name for name in differ if names[name][1] not in allowed]
     for name in excused:
-        print(f"pre-commit: {names[name][1]} differs, allowed by DECOMP_ALLOW_DIFF")
+        print(f"pre-commit: {names[name][1]} differs, allowed by hooks.allow_diff or DECOMP_ALLOW_DIFF")
     if HOOKS["compare"] and differ:
         print("pre-commit: these functions don't match the original (just compare):")
         for name in differ:
@@ -134,6 +150,7 @@ def pre_commit():
         if before is not None:
             by_address = {a: n for a, n in names.values()}
             new = sorted(a for a in matched - before if by_address[a] not in allowed)
+            new += sorted({a for a, n in names.values() if n in listed - allow_diff_at_head()})
             with open(path, "w") as f:
                 for address in new:
                     f.write(f"{address:#x} {by_address[address]}\n")
