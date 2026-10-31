@@ -235,7 +235,7 @@ class Scorer:
             self.n += 1
             k = self.n
         rel = os.path.relpath(self.src, "src")
-        conv = os.path.join(build.CONVERTED, os.path.dirname(rel), f"_perm{k}_{os.path.basename(rel)}")
+        conv = os.path.join(build.CONVERTED, os.path.dirname(rel), f"_perm{os.getpid()}_{k}_{os.path.basename(rel)}")
         obj = os.path.join(self.tmp, f"{k}.obj")
         text = self.source(body)
         if build.CRLF:
