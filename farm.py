@@ -17,11 +17,17 @@ matches or the farm is stopped; a stopped farm keeps what it found.
 src/ is never written while searching, so the farm can run on another
 machine from a copy of the repository: copy build/farm/*.c back.
 
---apply writes each kept body over its function's definition in src/.
+Searches run with permute.py --file, so they may also reorder the
+file's top-level declarations; such a match is kept whole as
+build/farm/NAME.file.
+
+--apply writes each kept body over its function's definition in src/,
+or the whole file when the match reordered its declarations, so apply
+those one at a time.
 Build and compare after it, since a body can flip other functions, then
 commit each one, taking it off hooks.allow_diff in that commit.
 """
-import argparse, glob, os, random, re, subprocess, sys
+import argparse, glob, os, random, re, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 import project
@@ -38,7 +44,7 @@ def found(name):
 
 def search(name, args, seed):
     log = open(os.path.join(OUT, f"{name}.log"), "a")
-    permute = [sys.executable, os.path.join(HERE, "permute.py"), name, "-j", str(args.j)]
+    permute = [sys.executable, os.path.join(HERE, "permute.py"), name, "-j", str(args.j), "--file"]
     best = os.path.join("build/permute", f"{name}.c")
     marker = os.path.join(OUT, f"{name}.decls")
     body = open(best).read() if os.path.exists(best) else None
@@ -72,6 +78,9 @@ def search(name, args, seed):
         if done.returncode == 0:
             body = open(best).read()
             open(found(name), "w").write(body)
+            whole = os.path.splitext(best)[0] + ".file"
+            if os.path.exists(whole):
+                shutil.copy(whole, os.path.join(OUT, f"{name}.file"))
             print(f"{name}: MATCH ({written} in src/)", flush=True)
             return True
     print(f"{name}: no match this round, best {current} ({written} in src/)", flush=True)
@@ -86,8 +95,14 @@ def apply(names):
             continue
         src, text, start, end = permute.find_function(name)
         body = open(found(name)).read()
-        open(src, "w", encoding="utf-8", newline="").write(text[:start] + body + text[end:])
-        print(f"{name}: written to {src}")
+        whole = os.path.join(OUT, f"{name}.file")
+        if os.path.exists(whole):
+            done = open(whole, encoding="utf-8").read()
+            print(f"{name}: written to {src}, with its declarations reordered")
+        else:
+            done = text[:start] + body + text[end:]
+            print(f"{name}: written to {src}")
+        open(src, "w", encoding="utf-8", newline="").write(done)
 
 
 def main():

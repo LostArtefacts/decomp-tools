@@ -40,14 +40,23 @@ os.chdir(ROOT)
 
 OUT = "build/permute"
 COMPARE_LOCK = threading.Lock()  # results() reads build.sources, patched per call
+FILE_MODE = [False, None]  # --file, and the text around the function in src/
 COMMUTATIVE = ["+", "*", "&", "|", "^", "==", "!="]
 FLIPPED = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}
 
 
-def keep(name, body):
-    """Writes the best variant so far, so a stopped search keeps it."""
+def keep(name, variant):
+    """Writes the best variant so far, so a stopped search keeps it: the
+    function's body as NAME.c and, when the rest of the file changed too,
+    the whole file as NAME.file."""
+    before, body, after = variant
     os.makedirs(OUT, exist_ok=True)
     open(os.path.join(OUT, f"{name}.c"), "w").write(body)
+    whole = os.path.join(OUT, f"{name}.file")
+    if FILE_MODE[0] and (before, after) != FILE_MODE[1]:
+        open(whole, "w", encoding="utf-8").write(before + body + after)
+    elif os.path.exists(whole):
+        os.remove(whole)
 
 
 def find_function(name):
@@ -397,6 +406,50 @@ def default_case(body, rng):
     return "\n".join(lines)
 
 
+TOP_DECL = re.compile(r"^(?!\}|#|typedef struct|struct |union |enum )[A-Za-z_][^\n{}]*;$")
+
+
+def declaration_runs(text):
+    """Runs of adjacent top-level declaration lines (externs and
+    prototypes, also inside extern "C" blocks), as (first, last) line
+    indices into text.split("\\n")."""
+    lines, runs, first = text.split("\n"), [], None
+    depth, extern_block = 0, False
+    for i, line in enumerate(lines):
+        top = depth == 0 or (depth == 1 and extern_block)
+        if top and TOP_DECL.match(line):
+            first = i if first is None else first
+        else:
+            if first is not None and i - first >= 2:
+                runs.append((first, i - 1))
+            first = None
+        if depth == 0:
+            extern_block = line.startswith('extern "C" {')
+        depth += line.count("{") - line.count("}")
+    if first is not None and len(lines) - first >= 2:
+        runs.append((first, len(lines) - 1))
+    return runs
+
+
+def file_order(variant, rng):
+    """Moves one top-level declaration line before or after the function
+    to another place in its run of declarations."""
+    before, body, after = variant
+    sides = [(k, part, declaration_runs(part)) for k, part in ((0, before), (1, after))]
+    sides = [x for x in sides if x[2]]
+    if not sides:
+        return None
+    k, part, runs = rng.choice(sides)
+    a, b = rng.choice(runs)
+    lines = part.split("\n")
+    i, j = rng.randint(a, b), rng.randint(a, b)
+    if i == j:
+        return None
+    lines.insert(j, lines.pop(i))
+    part = "\n".join(lines)
+    return (part, body, after) if k == 0 else (before, body, part)
+
+
 MUTATIONS = [swap_operands, swap_operands, reorder_declarations, shuffle_declarations, swap_statements,
              flip_if, swap_logical, compound, inline_return, condition_form, increment_form,
              ternary_form, loop_form, address_form, move_statement, default_case]
@@ -416,18 +469,21 @@ class Scorer:
         self.tmp = tempfile.mkdtemp(prefix="permute", dir=os.path.join(ROOT, "build"))
         self.lock = threading.Lock()
         self.n = 0
+        self.matched = None
 
-    def source(self, body):
-        return self.text[:self.start] + body + self.text[self.end:]
+    def variant(self, body):
+        return (self.text[:self.start], body, self.text[self.end:])
 
-    def score(self, body):
+    def score(self, variant):
+        if isinstance(variant, str):
+            variant = self.variant(variant)
         with self.lock:
             self.n += 1
             k = self.n
         rel = os.path.relpath(self.src, "src")
         conv = os.path.join(build.CONVERTED, os.path.dirname(rel), f"_perm{os.getpid()}_{k}_{os.path.basename(rel)}")
         obj = os.path.join(self.tmp, f"{k}.obj")
-        text = self.source(body)
+        text = "".join(variant)
         if build.CRLF:
             text = text.replace("\n", "\r\n")
         with open(conv, "wb") as f:
@@ -444,22 +500,28 @@ class Scorer:
             saved = build.sources
             try:
                 build.sources = lambda *a, **kw: [(self.src, obj)]
-                res = [r for r in compare.results(self.symbols) if r[0] in self.symbol_names]
+                every = list(compare.results(self.symbols))
             finally:
                 build.sources = saved
                 os.remove(obj)
+        res = [r for r in every if r[0] in self.symbol_names]
+        matched = {r[0] for r in every if r[1] and r[0] not in self.symbol_names}
+        if self.matched is None:
+            self.matched = matched
+        broken = len(self.matched - matched)
         if not res:
             self.why = (f"compiled, but the object defines none of {' '.join(self.symbol_names)} (symbols.csv's "
                         f"symbols for {self.name}): check the function's linkage, extern \"C\" or C++")
             return None
         _, same, code_bytes, mask, orig, diffs = res[0]
         if same:
-            return 0
+            return 1000 * broken
         shown = bytes(b if m and i < len(orig) else a
                       for i, (a, m, b) in enumerate(zip(code_bytes, mask, orig + bytes(len(code_bytes)))))
         ours = compare.disasm(shown, self.addr)
         sm = difflib.SequenceMatcher(None, ours, self.orig_asm, autojunk=False)
-        return len(ours) + len(self.orig_asm) - 2 * sum(b.size for b in sm.get_matching_blocks()) + len(diffs)
+        return (len(ours) + len(self.orig_asm) - 2 * sum(b.size for b in sm.get_matching_blocks()) + len(diffs)
+                + 1000 * broken)
 
 
 DECL = re.compile(r"^(\s+)((?:const |unsigned |signed |static |register |struct |enum )*[A-Za-z_]\w*[\s\*]+)([^;=(){}]+);$")
@@ -530,11 +592,15 @@ def main():
     ap.add_argument("--decls", action="store_true", help="search declaration orders exhaustively")
     ap.add_argument("--limit", type=int, default=3000, help="--decls: most candidates to try")
     ap.add_argument("--start", help="a variant to search from, such as an earlier run's best")
+    ap.add_argument("--file", action="store_true",
+                    help="also reorder the file's top-level declarations, keeping its other functions matching")
     args = ap.parse_args()
+    FILE_MODE[0] = args.file
     build.compile_all()
     src, text, start, end = find_function(args.name)
     s = Scorer(args.name, src, text, start, end)
-    base = text[start:end]
+    base = s.variant(text[start:end])
+    FILE_MODE[1] = (base[0], base[2])
     first = s.score(base)
     if first is None:
         sys.exit("the function doesn't build as it is: " + getattr(s, "why", "unknown reason"))
@@ -545,7 +611,13 @@ def main():
     rng = random.Random(args.s)
     best, best_score = base, first
     if args.start and os.path.exists(args.start):
-        seed = open(args.start, encoding="utf-8").read()
+        seed = s.variant(open(args.start, encoding="utf-8").read())
+        whole = os.path.splitext(args.start)[0] + ".file"
+        if args.file and os.path.exists(whole):
+            full = open(whole, encoding="utf-8").read()
+            at = full.find(seed[1])
+            if at >= 0:
+                seed = (full[:at], seed[1], full[at + len(seed[1]):])
         score = s.score(seed)
         if score is not None and score < best_score:
             best, best_score = seed, score
@@ -555,7 +627,7 @@ def main():
     tried = 0
 
     if args.decls and best_score:
-        cands = declaration_orders(best, args.limit, rng)[1:]
+        cands = [(best[0], b, best[2]) for b in declaration_orders(best[1], args.limit, rng)[1:]]
         print(f"{len(cands)} declaration orders to try", flush=True)
         step = args.j * 4
         with ThreadPoolExecutor(args.j) as pool:
@@ -571,13 +643,18 @@ def main():
                     break
         deadline = 0
 
-    def candidate(seed_body, r):
-        body = seed_body
+    def candidate(seed, r):
+        before, body, after = seed
         for _ in range(r.choice([1, 1, 1, 2, 3])):
+            if args.file and r.random() < 0.3:
+                new = file_order((before, body, after), r)
+                if new:
+                    before, body, after = new
+                continue
             new = r.choice(MUTATIONS)(body, r)
             if new:
                 body = new
-        return body
+        return (before, body, after)
 
     with ThreadPoolExecutor(args.j) as pool:
         while time.time() < deadline and best_score:
@@ -596,11 +673,11 @@ def main():
                 cur, cur_score = best, best_score
     shutil.rmtree(s.tmp, ignore_errors=True)
     os.makedirs(OUT, exist_ok=True)
+    keep(args.name, best)
     out = os.path.join(OUT, f"{args.name}.c")
-    open(out, "w").write(best)
     print(f"{tried} tries, best score {best_score}{' (MATCH)' if best_score == 0 else ''}; written to {out}")
     if best != base:
-        sys.stdout.writelines(difflib.unified_diff(base.splitlines(True), best.splitlines(True),
+        sys.stdout.writelines(difflib.unified_diff("".join(base).splitlines(True), "".join(best).splitlines(True),
                                                    "as written", "best variant", n=1))
     return 0 if best_score == 0 else 1
 
