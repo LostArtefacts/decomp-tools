@@ -33,6 +33,16 @@ orders the terms of a sum, and often register choice, by a key built
 from the order its locals are declared in (all of them, used or not),
 which the random search rarely hits; this mode does.
 
+--pad looks for a declaration that only needs to move. It first puts
+N dummy declarations right before the function, for N below --limit
+(default 32 here), to see whether some shift of the symbol IDs makes it
+match; if one does, it tries every real change that shifts them: each
+top-level declaration line moved from after the function to right
+before it or from before it to right after it, and each prototype
+before it with its parameter names dropped. A change counts only when
+the function matches and every other function in the file still does;
+the file goes to build/permute/NAME.file.
+
 src/ is never written. The best variant goes to
 build/permute/NAME.c, and the change is printed as a diff to apply by
 hand; run the full compare after applying it, since a change can flip
@@ -419,6 +429,87 @@ def default_case(body, rng):
 
 
 TOP_DECL = re.compile(r"^(?!\}|#|typedef struct|struct |union |enum )[A-Za-z_][^\n{}]*;$")
+
+
+def lift(line, cpp):
+    """`line`, taken out of an extern "C" block, as a top-level line."""
+    if cpp and not line.startswith('extern "C"'):
+        return 'extern "C" ' + line
+    return line
+
+
+def top_lines(text):
+    """(index, line, in extern "C" block) of the top-level declaration
+    lines in text.split("\\n")."""
+    out, depth, extern_block = [], 0, False
+    for i, line in enumerate(text.split("\n")):
+        top = depth == 0 or (depth == 1 and extern_block)
+        if top and TOP_DECL.match(line):
+            out.append((i, line, depth == 1))
+        if depth == 0:
+            extern_block = line.startswith('extern "C" {')
+        depth += line.count("{") - line.count("}")
+    return out
+
+
+def unnamed(line):
+    """A prototype line with its parameter names dropped, or None."""
+    m = re.match(r"^(.*\()(.*)(\)\s*;)$", line)
+    if not m or "(" in m[2] or not m[2].strip() or m[2].strip() == "void":
+        return None
+    params = []
+    for p in m[2].split(","):
+        q = re.match(r"^(.*?[\s*&])([A-Za-z_]\w*)(\s*\[[^\]]*\])?\s*$", p.strip())
+        if not q or not q[1].strip():
+            return None
+        params.append(q[1].rstrip() + (q[3] or "").strip())
+    new = m[1] + ", ".join(params) + m[3]
+    return None if new == line else new
+
+
+def pad_moves(variant, cpp):
+    """Every real change of the number of declarations before the
+    function: (description, variant)."""
+    before, body, after = variant
+    out = []
+    blines, alines = before.split("\n"), after.split("\n")
+    for i, line, inside in top_lines(before):
+        rest = blines[:i] + blines[i + 1:]
+        moved = lift(line, cpp) if inside else line
+        out.append((f"move below: {line}", ("\n".join(rest), body, after[:1] + moved + "\n" + after[1:]
+                                            if after.startswith("\n") else "\n" + moved + "\n" + after)))
+        new = unnamed(line)
+        if new:
+            out.append((f"drop the names: {line}", ("\n".join(blines[:i] + [new] + blines[i + 1:]), body, after)))
+    for i, line, inside in top_lines(after):
+        rest = alines[:i] + alines[i + 1:]
+        moved = lift(line, cpp) if inside else line
+        out.append((f"move above: {line}", (before + moved + "\n", body, "\n".join(rest))))
+    return out
+
+
+def pad(s, base, limit, jobs):
+    """--pad: the variant that matches, or None."""
+    cpp = s.src.lower().endswith((".cpp", ".cc", ".cxx"))
+    before, body, after = base
+    pads = [(before + "".join(f"extern int Pad{i};\n" for i in range(n)), body, after) for n in range(limit)]
+    with ThreadPoolExecutor(jobs) as pool:
+        scores = list(pool.map(s.score, pads))
+    hits = [n for n, sc in enumerate(scores) if sc is not None and sc % 1000 == 0]
+    print("shifts: " + " ".join(f"{n}:{'-' if sc is None else sc % 1000}" for n, sc in enumerate(scores)), flush=True)
+    if not hits:
+        print("no shift of the symbol IDs makes it match")
+        return None
+    print(f"it matches with {', '.join(map(str, hits))} more declarations before it", flush=True)
+    moves = pad_moves(base, cpp)
+    print(f"{len(moves)} declaration changes to try", flush=True)
+    with ThreadPoolExecutor(jobs) as pool:
+        for (what, variant), sc in zip(moves, pool.map(lambda m: s.score(m[1]), moves)):
+            if sc == 0:
+                print(f"MATCH: {what}", flush=True)
+                return variant
+    print("no single declaration change does it")
+    return None
 
 
 def declaration_runs(text):
@@ -873,10 +964,12 @@ def main():
     ap.add_argument("--start", help="a variant to search from, such as an earlier run's best")
     ap.add_argument("--sweep", action="store_true",
                     help="enumerate the neighbourhoods of the diff's lines, beam search, until nothing helps")
+    ap.add_argument("--pad", action="store_true",
+                    help="look for a shift of the symbol IDs, then a declaration move that makes it")
     ap.add_argument("--file", action="store_true",
                     help="also reorder the file's top-level declarations, keeping its other functions matching")
     args = ap.parse_args()
-    FILE_MODE[0] = args.file
+    FILE_MODE[0] = args.file or args.pad
     build.compile_all()
     src, text, start, end = find_function(args.name)
     s = Scorer(args.name, src, text, start, end)
@@ -907,7 +1000,13 @@ def main():
     deadline = time.time() + args.t if best_score else 0
     tried = 0
 
-    if args.sweep and best_score:
+    if args.pad and best_score:
+        found = pad(s, best, args.limit if args.limit != 3000 else 32, args.j)
+        if found:
+            best, best_score = found, 0
+        keep(args.name, best)
+        deadline = 0
+    elif args.sweep and best_score:
         best, best_score, _ = sweep(s, best, best_score, args, lambda v: keep(args.name, v))
         tried = 0
         deadline = 0
