@@ -217,8 +217,189 @@ def inline_return(body, rng):
     return body[:m.start()] + new + body[m.end():]
 
 
+LVALUE = r"[A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*|\[[^\[\]]*\])*"
+
+
+def condition_form(body, rng):
+    """Writes one test as `!x` or `x == 0`, or `if (x)` as `if (x != 0)`,
+    and back."""
+    forms = [
+        (re.compile(r"(?<=[(\s])!(" + OPERAND + r")(?=[)\s])"), lambda m: f"{m.group(1)} == 0"),
+        (re.compile(r"(?<=\()(" + OPERAND + r") == 0(?=\))|(?<=[&|] )(" + OPERAND + r") == 0(?=[)\s])"),
+         lambda m: f"!{m.group(1) or m.group(2)}"),
+        (re.compile(r"(?:(?<=\bif \()|(?<=\bwhile \())(" + OPERAND + r")(?=\))"), lambda m: f"{m.group(1)} != 0"),
+        (re.compile(r"(?:(?<=\bif \()|(?<=\bwhile \())(" + OPERAND + r") != 0(?=\))"), lambda m: m.group(1)),
+    ]
+    hits = [(m, f) for pat, f in forms for m in pat.finditer(body)]
+    if not hits:
+        return None
+    m, f = rng.choice(hits)
+    return body[:m.start()] + f(m) + body[m.end():]
+
+
+def increment_form(body, rng):
+    """Writes the statement `x++;` as `++x;` or `x += 1;`, and back."""
+    pat = re.compile(r"(?m)^(\s+)(?:(" + LVALUE + r")(\+\+|--)|(\+\+|--)(" + LVALUE + r")|(" + LVALUE
+                     + r") ([-+])= 1);$")
+    hits = list(pat.finditer(body))
+    if not hits:
+        return None
+    m = rng.choice(hits)
+    ind = m.group(1)
+    if m.group(2):
+        x, op = m.group(2), m.group(3)
+    elif m.group(5):
+        x, op = m.group(5), m.group(4)
+    else:
+        x, op = m.group(6), m.group(7) * 2
+    forms = [f"{x}{op};", f"{op}{x};", f"{x} {op[0]}= 1;"]
+    forms.remove(m.group(0)[len(ind):])
+    return body[:m.start()] + ind + rng.choice(forms) + body[m.end():]
+
+
+def ternary_form(body, rng):
+    """Writes `x = c ? a : b;` as an if/else of two assignments, and back."""
+    tern = re.compile(r"(?m)^(\s+)(" + LVALUE + r") = \(?([^;?\n]+?)\)? \? ([^;:\n]+) : ([^;\n]+);$")
+    ifelse = re.compile(r"(?m)^(\s+)if \(([^\n]*)\)\n\1    (" + LVALUE + r") = ([^\n;]+);\n\1else\n\1    \3 = ([^\n;]+);$")
+    hits = [("t", m) for m in tern.finditer(body)] + [("i", m) for m in ifelse.finditer(body)]
+    if not hits:
+        return None
+    kind, m = rng.choice(hits)
+    ind = m.group(1)
+    if kind == "t":
+        new = (f"{ind}if ({m.group(3)})\n{ind}    {m.group(2)} = {m.group(4)};\n"
+               f"{ind}else\n{ind}    {m.group(2)} = {m.group(5)};")
+    else:
+        new = f"{ind}{m.group(3)} = ({m.group(2)}) ? {m.group(4)} : {m.group(5)};"
+    return body[:m.start()] + new + body[m.end():]
+
+
+def block_end(lines, i):
+    """The line closing the block that line `i` opens, or None."""
+    ind = re.match(r"\s*", lines[i]).group(0)
+    for j in range(i + 1, len(lines)):
+        if lines[j] == ind + "}":
+            return j
+        if lines[j].strip() and not lines[j].startswith(ind + " ") and lines[j] != ind + "}":
+            return None
+    return None
+
+
+def loop_form(body, rng):
+    """Writes `for (a; c; s) {...}` as `a; while (c) {...; s;}`, and back,
+    for loops with no continue."""
+    lines = body.split("\n")
+    hits = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s+)for \(([^;]*); ([^;]+); ([^)]*)\) \{$", line)
+        if m:
+            j = block_end(lines, i)
+            if j and not any("continue" in l for l in lines[i:j]):
+                hits.append(("f", i, j, m))
+        m = re.match(r"^(\s+)while \((.+)\) \{$", line)
+        if m and i > 0:
+            j = block_end(lines, i)
+            init = re.match(r"^" + m.group(1) + r"([^\s{}][^{};]*);$", lines[i - 1])
+            step = j and re.match(r"^" + m.group(1) + r"    ([^\s{}][^{};]*);$", lines[j - 1])
+            if j and init and step and not CONTROL.match(lines[i - 1]) and not CONTROL.match(lines[j - 1]) \
+                    and not any("continue" in l for l in lines[i:j]):
+                hits.append(("w", i, j, (m, init.group(1), step.group(1))))
+    if not hits:
+        return None
+    kind, i, j, m = rng.choice(hits)
+    if kind == "f":
+        ind, init, cond, step = m.group(1), m.group(2), m.group(3), m.group(4)
+        new = ([f"{ind}{init};"] if init.strip() else []) + [f"{ind}while ({cond}) {{"] + lines[i + 1:j]
+        new += ([f"{ind}    {step};"] if step.strip() else []) + [f"{ind}}}"]
+        return "\n".join(lines[:i] + new + lines[j + 1:])
+    w, init, step = m
+    ind = w.group(1)
+    new = [f"{ind}for ({init}; {w.group(2)}; {step}) {{"] + lines[i + 1:j - 1] + [f"{ind}}}"]
+    return "\n".join(lines[:i - 1] + new + lines[j + 1:])
+
+
+def address_form(body, rng):
+    """Writes `&a[i]` as `a + i`, and back."""
+    amp = re.compile(r"&([A-Za-z_]\w*)\[([^\[\]]+)\](?![\[.]|->)")
+    plus = re.compile(r"(?<=[(=,] )([A-Za-z_]\w*) \+ (" + OPERAND + r")(?=[);,])|(?<=\()([A-Za-z_]\w*) \+ (" + OPERAND
+                      + r")(?=\))")
+    hits = [("a", m) for m in amp.finditer(body)] + [("p", m) for m in plus.finditer(body)]
+    if not hits:
+        return None
+    kind, m = rng.choice(hits)
+    if kind == "a":
+        return body[:m.start()] + f"{m.group(1)} + {m.group(2)}" + body[m.end():]
+    a, i = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+    return body[:m.start()] + f"&{a}[{i}]" + body[m.end():]
+
+
+def move_statement(body, rng):
+    """Moves one simple statement up or down past up to three others at
+    the same indent."""
+    lines = body.split("\n")
+
+    def simple(i):
+        m = SIMPLE.match(lines[i])
+        return m and not CONTROL.match(lines[i]) and not re.match(r"^\s+[A-Za-z_][\w\s\*]*\s\**[A-Za-z_]\w*(\s*,\s*\**\w+)*;$",
+                                                                    lines[i]) and m.group(1)
+    runs, i = [], 1
+    while i < len(lines):
+        ind = simple(i)
+        j = i
+        while ind and j + 1 < len(lines) and simple(j + 1) == ind:
+            j += 1
+        if j - i >= 2:
+            runs.append((i, j))
+        i = j + 1
+    if not runs:
+        return None
+    a, b = rng.choice(runs)
+    i = rng.randint(a, b)
+    k = min(b, max(a, i + rng.choice([-3, -2, 2, 3])))
+    if k == i:
+        return None
+    line = lines.pop(i)
+    lines.insert(k, line)
+    return "\n".join(lines)
+
+
+def default_case(body, rng):
+    """Adds `default: break;` to a switch without a default, at its start
+    or its end, or removes an empty one."""
+    lines = body.split("\n")
+    hits = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)switch \(.*\) \{$", line)
+        if not m:
+            continue
+        ind = m.group(1)
+        j = i + 1
+        while j < len(lines) and lines[j] != ind + "}":
+            if lines[j].strip() and not lines[j].startswith((ind + " ", ind + "case ", ind + "default:")):
+                j = None
+                break
+            j += 1
+        if j is None or j == len(lines):
+            continue
+        empty = [k for k in range(i + 1, j - 1) if lines[k] == ind + "default:" and lines[k + 1] == ind + "    break;"
+                 and (lines[k + 2] == ind + "}" or lines[k + 2].startswith(ind + "case "))]
+        if empty:
+            hits.append(("del", empty[0], ind))
+        elif not any(lines[k] == ind + "default:" for k in range(i + 1, j)):
+            hits += [("add", j, ind), ("add", i + 1, ind)]
+    if not hits:
+        return None
+    kind, k, ind = rng.choice(hits)
+    if kind == "del":
+        del lines[k:k + 2]
+    else:
+        lines[k:k] = [ind + "default:", ind + "    break;"]
+    return "\n".join(lines)
+
+
 MUTATIONS = [swap_operands, swap_operands, reorder_declarations, shuffle_declarations, swap_statements,
-             flip_if, swap_logical, compound, inline_return]
+             flip_if, swap_logical, compound, inline_return, condition_form, increment_form,
+             ternary_form, loop_form, address_form, move_statement, default_case]
 
 
 class Scorer:
