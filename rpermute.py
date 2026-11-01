@@ -6,6 +6,8 @@ compiles without wine, and brings its result back.
 project.toml's [remote] names the machine: `host` is an ssh host with
 its own copy of the project (the toolchain under .wine/drive_c and the
 original exe), `root` is that copy's directory and `python` its Python.
+RPERMUTE_ROOT in the environment names another copy instead, so two
+checkouts can permute at once.
 Each run sends src/, config/, project.toml and tools/ there, along with
 build/permute/NAME.c and NAME.file when they exist so --start can use
 them, runs `permute.py NAME ...` in the copy, and copies NAME.c and
@@ -27,7 +29,8 @@ def main():
         sys.exit(__doc__)
     if not REMOTE["host"] or not REMOTE["root"]:
         sys.exit("project.toml has no [remote] host and root")
-    name, host, root = sys.argv[1], REMOTE["host"], REMOTE["root"].rstrip("/\\")
+    name, host = sys.argv[1], REMOTE["host"]
+    root = os.environ.get("RPERMUTE_ROOT", REMOTE["root"]).rstrip("/\\")
     win = root.replace("/", "\\")
     ours = [os.path.join("build/permute", f"{name}{ext}") for ext in (".c", ".file")]
     sent = ["src", "config", "project.toml", "tools"] + [p for p in ours if os.path.exists(p)]
