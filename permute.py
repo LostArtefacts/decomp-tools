@@ -36,7 +36,9 @@ which the random search rarely hits; this mode does.
 --pad looks for a declaration that only needs to move. It first puts
 N dummy declarations right before the function, for N below --limit
 (default 32 here), to see whether some shift of the symbol IDs makes it
-match; if one does, it tries every real change that shifts them: each
+match. If none does, it searches every local declaration order (as
+--decls) at the three shifts that come closest, and prints the shift and
+order that match. If one does, it tries every real change that shifts them: each
 top-level declaration line moved from after the function to right
 before it or from before it to right after it, and each prototype
 before it with its parameter names dropped. A change counts only when
@@ -506,7 +508,20 @@ def pad(s, base, limit, jobs):
     hits = [n for n, sc in enumerate(scores) if sc is not None and sc % 1000 == 0]
     print("shifts: " + " ".join(f"{n}:{'-' if sc is None else sc % 1000}" for n, sc in enumerate(scores)), flush=True)
     if not hits:
-        print("no shift of the symbol IDs makes it match")
+        print("no shift of the symbol IDs makes it match", flush=True)
+        ranked = sorted((sc % 1000, n) for n, sc in enumerate(scores) if sc is not None)[:3]
+        for sc, n in ranked:
+            orders = declaration_orders(body, 3000, random.Random(n))[1:]
+            print(f"with {n} more declarations (score {sc}): {len(orders)} local declaration orders", flush=True)
+            cands = [(pads[n][0], b, after) for b in orders]
+            with ThreadPoolExecutor(jobs) as pool:
+                for cand, got in zip(cands, pool.map(s.score, cands)):
+                    if got is not None and got % 1000 == 0:
+                        print(f"MATCH with {n} more declarations before it and this local order:", flush=True)
+                        sys.stdout.writelines(difflib.unified_diff(body.splitlines(True), cand[1].splitlines(True),
+                                                                   "as written", "matching", n=0))
+                        keep(s.name, (before, cand[1], after))
+                        return None
         return None
     print(f"it matches with {', '.join(map(str, hits))} more declarations before it", flush=True)
     moves = pad_moves(base, cpp)
