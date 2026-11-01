@@ -8,8 +8,11 @@ The functions default to project.toml's hooks.allow_diff, the ones in
 src/ that don't match yet. Each round runs every function still
 unmatched through a random search of -t seconds with a fresh seed,
 starting from the best variant so far (build/permute/NAME.c), after
-`permute.py NAME --decls` on that variant whenever it changed since the
-last one, PARALLEL functions at a time with JOBS compiles each. Logs go to build/farm/NAME.log, and every lower score is
+`permute.py NAME --sweep` on that variant whenever it changed since the
+last sweep, PARALLEL functions at a time with JOBS compiles each. A
+function whose sweep found nothing more is reported as "sweep
+exhausted" and listed in build/farm/exhausted.txt: the rewrites can't
+reach it, so it needs a person or an LLM. Logs go to build/farm/NAME.log, and every lower score is
 printed as it is found; a body that matches
 is kept as build/farm/NAME.c. -r 0 runs rounds until every function
 matches or the farm is stopped; a stopped farm keeps what it found.
@@ -51,14 +54,16 @@ def search(name, args, seed):
     log = open(os.path.join(OUT, f"{name}.log"), "a")
     permute = [sys.executable, os.path.join(HERE, "permute.py"), name, "-j", str(args.j), "--file"]
     best = os.path.join("build/permute", f"{name}.c")
-    marker = os.path.join(OUT, f"{name}.decls")
+    marker = os.path.join(OUT, f"{name}.swept")
     body = open(best).read() if os.path.exists(best) else None
     steps = [["-t", str(args.t), "-s", str(seed), "--start", best]]
-    if body is None or not os.path.exists(marker) or open(marker).read() != body:
-        steps.insert(0, ["--decls", "--start", best])
+    swept = body is not None and os.path.exists(marker) and open(marker).read() == body
+    if not swept:
+        steps.insert(0, ["--sweep", "-t", str(args.t), "--start", best])
+    exhausted = swept
     written = current = None
     for extra in steps:
-        kind = "declaration orders" if extra[0] == "--decls" else "random search"
+        kind = "sweep" if extra[0] == "--sweep" else "random search"
         log.write(f"== {' '.join(extra)}\n")
         log.flush()
         run = subprocess.Popen(permute + extra, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -73,13 +78,17 @@ def search(name, args, seed):
             m = re.match(r"starting from .*, score (\d+)$", line)
             if m:
                 current = min(current, int(m[1])) if current is not None else int(m[1])
+            if line.startswith("sweep exhausted"):
+                exhausted = True
             m = re.match(r"\s+\d+ tries: score (\d+)$", line)
             if m and (current is None or int(m[1]) < current):
                 print(f"{name}: {current} -> {m[1]} ({kind})", flush=True)
                 current = int(m[1])
+                if kind != "sweep":
+                    exhausted = False
         done = subprocess.CompletedProcess(run.args, run.wait())
-        if extra[0] == "--decls" and os.path.exists(best):
-            open(marker, "w").write(open(best).read())
+        if extra[0] == "--sweep" and exhausted and os.path.exists(best):
+            open(marker, "w", encoding="utf-8", newline="\n").write(open(best).read())
         if done.returncode == 0:
             body = open(best).read()
             open(found(name), "w", encoding="utf-8", newline="\n").write(body)
@@ -88,7 +97,13 @@ def search(name, args, seed):
                 shutil.copy(whole, os.path.join(OUT, f"{name}.file"))
             print(f"{name}: MATCH ({written} in src/)", flush=True)
             return True
-    print(f"{name}: no match this round, best {current} ({written} in src/)", flush=True)
+    print(f"{name}: no match this round, best {current} ({written} in src/)"
+          f"{', sweep exhausted' if exhausted else ''}", flush=True)
+    if exhausted:
+        listed = os.path.join(OUT, "exhausted.txt")
+        rows = dict(l.split() for l in open(listed)) if os.path.exists(listed) else {}
+        rows[name] = str(current)
+        open(listed, "w").write("".join(f"{k} {v}\n" for k, v in sorted(rows.items())))
     return False
 
 

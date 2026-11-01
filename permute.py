@@ -6,6 +6,14 @@
 --start FILE searches from the variant in FILE instead, when it builds
 and scores better than the definition in src/.
 
+--sweep enumerates instead of sampling, around the lines whose code
+differs (from /Zd line numbers): every declaration order, every
+combination of swapped operands in those lines, every single
+application of the other rewrites there, and with --file every place
+a top-level declaration before the function can move to. It keeps the
+best two variants and goes again from them until a whole pass finds
+nothing better, then prints "sweep exhausted".
+
 NAME must already be defined in src/ and build. The permuter takes its
 definition, applies random rewrites (reordering local declarations,
 swapping the operands of commutative operators, comparisons, && and ||,
@@ -83,13 +91,17 @@ OPERAND = r"[A-Za-z_][\w]*(?:(?:\.|->)[A-Za-z_]\w*|\[[^\[\]]*\])*|\d+|0x[0-9a-fA
 LEFT_EDGE = r"(?<=[(\[,=?:])\s*|(?<=return )|(?<=&& )|(?<=\|\| )"
 
 
+def operand_pattern():
+    ops = "|".join(re.escape(o) for o in sorted(COMMUTATIVE + list(FLIPPED), key=len, reverse=True))
+    return re.compile(r"(?:" + LEFT_EDGE + r")(" + OPERAND + r") (" + ops + r") (" + OPERAND
+                      + r")(?=\s*[)\],;?:]|\s*&&|\s*\|\|)")
+
+
 def swap_operands(body, rng):
     """Swaps the two operands of one commutative operator, or flips one
     comparison, where both are simple and bounded by low-precedence
     tokens."""
-    ops = "|".join(re.escape(o) for o in sorted(COMMUTATIVE + list(FLIPPED), key=len, reverse=True))
-    pat = re.compile(r"(?:" + LEFT_EDGE + r")(" + OPERAND + r") (" + ops + r") (" + OPERAND + r")(?=\s*[)\],;?:]|\s*&&|\s*\|\|)")
-    hits = list(pat.finditer(body))
+    hits = list(operand_pattern().finditer(body))
     if not hits:
         return None
     m = rng.choice(hits)
@@ -523,6 +535,101 @@ def weight(stats, kind):
     return 1 + 50 * wins / (tries + 50)
 
 
+SWEEP_FORMS = ["condition_form", "increment_form", "ternary_form", "address_form", "compound", "inline_return",
+               "flip_if", "swap_logical", "default_case", "loop_form", "move_statement", "swap_statements"]
+
+
+def line_of(body, offset):
+    return body.count("\n", 0, offset)
+
+
+def sweep_dimensions(variant, hot, limit):
+    """The neighbourhoods --sweep enumerates around `variant`, as
+    (name, candidates): every order of the declarations, every place each
+    top-level declaration before the function can move to in its run,
+    every combination of swapped operands in the hot lines, and every
+    single application of the other rewrites that touches them."""
+    before, body, after = variant
+    near = lambda lo, hi: not hot or any(lo <= n < max(hi, lo + 1) for n in hot)
+    out = [("declaration orders", [(before, b, after) for b in declaration_orders(body, limit, random.Random(0))[1:]])]
+    lines, moved = before.split("\n"), []
+    for a, b in (declaration_runs(before)[-3:] if FILE_MODE[0] else []):
+        for i in range(a, b + 1):
+            for j in range(a, b + 1):
+                if i != j:
+                    copy = list(lines)
+                    copy.insert(j, copy.pop(i))
+                    moved.append(("\n".join(copy), body, after))
+    out.append(("extern orders", moved[:limit]))
+    hits = [m for m in operand_pattern().finditer(body) if near(line_of(body, m.start()), line_of(body, m.end()) + 1)]
+    hits = hits[:12]
+    combos = []
+    for mask in range(1, 1 << len(hits)):
+        text = body
+        for k in reversed(range(len(hits))):
+            if mask >> k & 1:
+                m = hits[k]
+                a, op, b = m.group(1), FLIPPED.get(m.group(2), m.group(2)), m.group(3)
+                text = text[:m.start(1)] + f"{b} {op} {a}" + text[m.end(3):]
+        combos.append((before, text, after))
+    out.append((f"operand orders ({len(hits)} operators)", combos))
+    forms, seen = [], {body}
+    for name in SWEEP_FORMS:
+        f = globals()[name]
+        for seed in range(64):
+            new = f(body, random.Random(seed))
+            if new and new not in seen and near(*changed_lines(body, new)):
+                seen.add(new)
+                forms.append((before, new, after))
+    out.append(("rewrites at the hot lines", forms))
+    return out
+
+
+def sweep(s, best, best_score, args, keep_best):
+    """Beam search over sweep_dimensions until a whole pass finds nothing
+    better: returns the best variant and score, and whether it got that
+    far (`exhausted`) within the time."""
+    beam, seen = [(best_score, best)], {"".join(best)}
+    deadline = time.time() + args.t
+    passes = 0
+    with ThreadPoolExecutor(args.j) as pool:
+        while best_score and time.time() < deadline:
+            passes += 1
+            better = False
+            for score, variant in list(beam):
+                hot = s.hot_lines(variant)
+                hot |= {n + d for n in hot for d in (-1, 1)}
+                for name, cands in sweep_dimensions(variant, hot, args.limit):
+                    cands = [c for c in cands if "".join(c) not in seen]
+                    seen.update("".join(c) for c in cands)
+                    if not cands:
+                        continue
+                    print(f"  sweep {passes}: {name}, {len(cands)} variants from score {score}", flush=True)
+                    done, step, mark = 0, args.j * 4, 0.25
+                    for i in range(0, len(cands), step):
+                        chunk = cands[i:i + step]
+                        for c, sc in zip(chunk, pool.map(s.score, chunk)):
+                            if sc is None:
+                                continue
+                            beam.append((sc, c))
+                            if sc < best_score:
+                                best, best_score, better = c, sc, True
+                                print(f"  {len(seen):5d} tries: score {sc}", flush=True)
+                                keep_best(best)
+                        done += len(chunk)
+                        if done / len(cands) >= mark and len(cands) >= 200:
+                            print(f"    {done}/{len(cands)}", flush=True)
+                            mark += 0.25
+                        if not best_score or time.time() > deadline:
+                            return best, best_score, False
+                    beam = sorted(beam, key=lambda x: x[0])[:2]
+            if not better:
+                print(f"sweep exhausted after {passes} passes, {len(seen)} variants, best score {best_score}",
+                      flush=True)
+                return best, best_score, True
+    return best, best_score, False
+
+
 MUTATIONS = [swap_operands, swap_operands, reorder_declarations, shuffle_declarations, swap_statements,
              flip_if, swap_logical, compound, inline_return, condition_form, increment_form,
              ternary_form, loop_form, address_form, move_statement, default_case]
@@ -764,6 +871,8 @@ def main():
     ap.add_argument("--decls", action="store_true", help="search declaration orders exhaustively")
     ap.add_argument("--limit", type=int, default=3000, help="--decls: most candidates to try")
     ap.add_argument("--start", help="a variant to search from, such as an earlier run's best")
+    ap.add_argument("--sweep", action="store_true",
+                    help="enumerate the neighbourhoods of the diff's lines, beam search, until nothing helps")
     ap.add_argument("--file", action="store_true",
                     help="also reorder the file's top-level declarations, keeping its other functions matching")
     args = ap.parse_args()
@@ -798,7 +907,11 @@ def main():
     deadline = time.time() + args.t if best_score else 0
     tried = 0
 
-    if args.decls and best_score:
+    if args.sweep and best_score:
+        best, best_score, _ = sweep(s, best, best_score, args, lambda v: keep(args.name, v))
+        tried = 0
+        deadline = 0
+    elif args.decls and best_score:
         cands = [(best[0], b, best[2]) for b in declaration_orders(best[1], args.limit, rng)[1:]]
         print(f"{len(cands)} declaration orders to try", flush=True)
         step = args.j * 4
