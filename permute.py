@@ -43,6 +43,14 @@ before it with its parameter names dropped. A change counts only when
 the function matches and every other function in the file still does;
 the file goes to build/permute/NAME.file.
 
+--plan does the same for every function in NAME's file at once. It
+finds which shifts below --limit (default 64) make each function match
+when the extra declarations go right before it, then the number of
+declarations to add before each function, never fewer than before the
+one above it, that makes the most of them match, and prints that plan.
+Only the count matters to VC5, so the plan can be met with any real
+declarations.
+
 src/ is never written. The best variant goes to
 build/permute/NAME.c, and the change is printed as a diff to apply by
 hand; run the full compare after applying it, since a change can flip
@@ -512,6 +520,54 @@ def pad(s, base, limit, jobs):
     return None
 
 
+def plan(src, text, limit, jobs):
+    """--plan: prints how many declarations to add before each function
+    in `src` to match the most of them."""
+    rows = {r["name"] for r in compare_rows()}
+    import reorder
+    names = []
+    for kind, item in reorder.items(text):
+        n = reorder.fn_name(item) if kind == "fn" else None
+        if n in rows and n not in names:
+            names.append(n)
+    hits = {}
+    for name in names:
+        try:
+            _, t, start, end = find_function(name)
+            s = Scorer(name, src, t, start, end)
+        except (SystemExit, StopIteration, KeyError):
+            continue
+        before, body, after = s.variant(t[start:end])
+        pads = [(before + "".join(f"extern int Pad{i};\n" for i in range(n)), body, after) for n in range(limit)]
+        with ThreadPoolExecutor(jobs) as pool:
+            scores = list(pool.map(s.score, pads))
+        shutil.rmtree(s.tmp, ignore_errors=True)
+        hits[name] = {n for n, sc in enumerate(scores) if sc is not None and sc % 1000 == 0}
+        print(f"{name}: {' '.join(map(str, sorted(hits[name]))) or '-'}", flush=True)
+    order = [n for n in names if n in hits]
+    best = [[0] * limit for _ in order]
+    for j, name in enumerate(order):
+        run = 0
+        for c in range(limit):
+            if j:
+                run = max(run, best[j - 1][c])
+            best[j][c] = run + (c in hits[name])
+    c = max(range(limit), key=lambda c: best[-1][c]) if order else 0
+    chosen = []
+    for j in range(len(order) - 1, -1, -1):
+        chosen.append(c)
+        if j:
+            c = max(range(c + 1), key=lambda k: best[j - 1][k])
+    chosen.reverse()
+    now = sum(0 in hits[n] for n in order)
+    print(f"as written {now} of {len(order)} match; with this plan {best[-1][chosen[-1]] if order else 0}:")
+    prev = 0
+    for name, c in zip(order, chosen):
+        mark = "ok" if c in hits[name] else "--"
+        print(f"  {mark} {name}: {c}" + (f"  (+{c - prev} before it)" if c != prev else ""))
+        prev = c
+
+
 def declaration_runs(text):
     """Runs of adjacent top-level declaration lines (externs and
     prototypes, also inside extern "C" blocks), as (first, last) line
@@ -966,12 +1022,17 @@ def main():
                     help="enumerate the neighbourhoods of the diff's lines, beam search, until nothing helps")
     ap.add_argument("--pad", action="store_true",
                     help="look for a shift of the symbol IDs, then a declaration move that makes it")
+    ap.add_argument("--plan", action="store_true",
+                    help="plan how many declarations to add before each function in the file")
     ap.add_argument("--file", action="store_true",
                     help="also reorder the file's top-level declarations, keeping its other functions matching")
     args = ap.parse_args()
     FILE_MODE[0] = args.file or args.pad
     build.compile_all()
     src, text, start, end = find_function(args.name)
+    if args.plan:
+        plan(src, text, args.limit if args.limit != 3000 else 64, args.j)
+        return 0
     s = Scorer(args.name, src, text, start, end)
     base = s.variant(text[start:end])
     FILE_MODE[1] = (base[0], base[2])
