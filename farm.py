@@ -21,6 +21,11 @@ Searches run with permute.py --file, so they may also reorder the
 file's top-level declarations; such a match is kept whole as
 build/farm/NAME.file.
 
+--learn looks at how each best variant so far differs from src/ and
+writes the counts of each kind of rewrite to build/permute/_prior.json,
+which every search starts its rewrite weights from; the searches then
+add what they learn about each function in build/permute/NAME.stats.json.
+
 --apply writes each kept body over its function's definition in src/,
 or the whole file when the match reordered its declarations, so apply
 those one at a time.
@@ -87,6 +92,35 @@ def search(name, args, seed):
     return False
 
 
+def learn():
+    """Writes build/permute/_prior.json: for each kind of rewrite, in how
+    many functions the best variant so far differs from src/ by it, as
+    the starting weights of every search."""
+    import json
+    sys.path.insert(0, HERE)
+    import permute
+    seen, total = {}, 0
+    for path in sorted(glob.glob("build/permute/*.c")):
+        name = os.path.basename(path)[:-2]
+        try:
+            _, text, start, end = permute.find_function(name)
+        except Exception:
+            continue
+        if not text:
+            continue
+        best, ours = open(path, encoding="utf-8").read(), text[start:end]
+        if best == ours:
+            continue
+        total += 1
+        kinds = permute.classify(ours, best)
+        for kind in kinds:
+            seen[kind] = seen.get(kind, 0) + 1
+        print(f"{name}: {', '.join(sorted(kinds)) or '?'}")
+    prior = {kind: [5 * total, count] for kind, count in seen.items()}
+    json.dump(prior, open("build/permute/_prior.json", "w"))
+    print(f"{total} improved functions: " + ", ".join(f"{k} {v}" for k, v in sorted(seen.items(), key=lambda x: -x[1])))
+
+
 def apply(names):
     sys.path.insert(0, HERE)
     import permute
@@ -113,11 +147,15 @@ def main():
     ap.add_argument("-t", type=float, default=1800)
     ap.add_argument("-r", type=int, default=1)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--learn", action="store_true")
     args = ap.parse_args()
     names = args.names or list(project.config["hooks"]["allow_diff"])
     os.makedirs(OUT, exist_ok=True)
     if args.apply:
         apply(names)
+        return 0
+    if args.learn:
+        learn()
         return 0
     subprocess.run([sys.executable, os.path.join(HERE, "build.py")], check=True, stdout=subprocess.DEVNULL)
     rounds = 0

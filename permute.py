@@ -450,6 +450,79 @@ def file_order(variant, rng):
     return (part, body, after) if k == 0 else (before, body, part)
 
 
+GLOBAL_REWRITES = {"reorder_declarations", "shuffle_declarations", "file_order"}
+
+
+def changed_lines(old, new):
+    """The range of lines of `new` that differ from `old`, by common prefix
+    and suffix."""
+    a, b = old.split("\n"), new.split("\n")
+    p = 0
+    while p < min(len(a), len(b)) and a[p] == b[p]:
+        p += 1
+    s = 0
+    while s < min(len(a), len(b)) - p and a[-1 - s] == b[-1 - s]:
+        s += 1
+    return p, len(b) - s
+
+
+def classify(old, new):
+    """The kinds of rewrite that turn body `old` into `new`, roughly, by
+    looking at the lines that differ."""
+    a, b = old.split("\n"), new.split("\n")
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    kinds = set()
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        gone, came = a[i1:i2], b[j1:j2]
+        if any(l.strip() in {x.strip() for x in a} for l in came) and tag == "insert" or tag == "delete":
+            kinds.add("move_statement")
+        for x, y in zip(gone, came):
+            if DECL.match(x) and DECL.match(y):
+                kinds.add("reorder_declarations")
+            elif sorted(re.findall(r"\w+|\S", x)) == sorted(re.findall(r"\w+|\S", y)):
+                kinds.add("swap_logical" if "&&" in x or "||" in x else "swap_operands")
+        text_gone, text_came = "\n".join(gone), "\n".join(came)
+        for kind, pat in (("compound", r"[-+*&|^]= "), ("increment_form", r"\+\+|--|[-+]= 1;"),
+                          ("condition_form", r"== 0|!= 0|\(!"), ("ternary_form", r" \? "),
+                          ("loop_form", r"\b(?:for|while) \("), ("address_form", r"&\w+\["),
+                          ("inline_return", r"\breturn\b"), ("default_case", r"default:"),
+                          ("flip_if", r"\belse\b")):
+            if len(re.findall(pat, text_gone)) != len(re.findall(pat, text_came)):
+                kinds.add(kind)
+    if set(a) == set(b) and a != b and not kinds:
+        kinds.add("swap_statements")
+    return kinds
+
+
+def load_stats(name):
+    """Tries and wins per rewrite: build/permute/_prior.json, which farm.py
+    --learn writes, then this function's own NAME.stats.json."""
+    import json
+    stats = {}
+    for path in (os.path.join(OUT, "_prior.json"), os.path.join(OUT, f"{name}.stats.json")):
+        try:
+            for k, (tries, wins) in json.load(open(path)).items():
+                old = stats.get(k, [0, 0])
+                stats[k] = [old[0] + tries, old[1] + wins]
+        except (OSError, ValueError):
+            pass
+    return stats
+
+
+def save_stats(name, stats, prior):
+    import json
+    own = {k: [v[0] - prior.get(k, [0, 0])[0], v[1] - prior.get(k, [0, 0])[1]] for k, v in stats.items()}
+    os.makedirs(OUT, exist_ok=True)
+    json.dump(own, open(os.path.join(OUT, f"{name}.stats.json"), "w"))
+
+
+def weight(stats, kind):
+    tries, wins = stats.get(kind, [0, 0])
+    return 1 + 50 * wins / (tries + 50)
+
+
 MUTATIONS = [swap_operands, swap_operands, reorder_declarations, shuffle_declarations, swap_statements,
              flip_if, swap_logical, compound, inline_return, condition_form, increment_form,
              ternary_form, loop_form, address_form, move_statement, default_case]
@@ -474,9 +547,9 @@ class Scorer:
     def variant(self, body):
         return (self.text[:self.start], body, self.text[self.end:])
 
-    def score(self, variant):
-        if isinstance(variant, str):
-            variant = self.variant(variant)
+    def compile(self, variant, extra=()):
+        """Compiles `variant` alone; the object's path, or None (see
+        self.why). The caller removes the object."""
         with self.lock:
             self.n += 1
             k = self.n
@@ -489,21 +562,44 @@ class Scorer:
         with open(conv, "wb") as f:
             f.write(build.encode(text))
         try:
-            code, out = build.run_tool("cl", "/c", *self.flags, "/I" + build.win(build.CONVERTED),
+            code, out = build.run_tool("cl", "/c", *self.flags, *extra, "/I" + build.win(build.CONVERTED),
                                      "/Fo" + build.win(obj), build.win(conv))
         finally:
             os.remove(conv)
         if code or not os.path.exists(obj):
             self.why = "cl failed:\n" + "\n".join(l for l in out.splitlines() if "error" in l)[:1500]
+            if os.path.exists(obj):
+                os.remove(obj)
             return None
+        return obj
+
+    def results(self, obj):
         with COMPARE_LOCK:
             saved = build.sources
             try:
                 build.sources = lambda *a, **kw: [(self.src, obj)]
-                every = list(compare.results(self.symbols))
+                return list(compare.results(self.symbols))
             finally:
                 build.sources = saved
-                os.remove(obj)
+
+    def ours(self, res):
+        """Our instructions, with the original's bytes where only
+        relocations differ."""
+        _, same, code_bytes, mask, orig, diffs = res
+        shown = bytes(b if m and i < len(orig) else a
+                      for i, (a, m, b) in enumerate(zip(code_bytes, mask, orig + bytes(len(code_bytes)))))
+        return compare.disasm(shown, self.addr)
+
+    def score(self, variant):
+        if isinstance(variant, str):
+            variant = self.variant(variant)
+        obj = self.compile(variant)
+        if obj is None:
+            return None
+        try:
+            every = self.results(obj)
+        finally:
+            os.remove(obj)
         res = [r for r in every if r[0] in self.symbol_names]
         matched = {r[0] for r in every if r[1] and r[0] not in self.symbol_names}
         if self.matched is None:
@@ -516,12 +612,88 @@ class Scorer:
         _, same, code_bytes, mask, orig, diffs = res[0]
         if same:
             return 1000 * broken
-        shown = bytes(b if m and i < len(orig) else a
-                      for i, (a, m, b) in enumerate(zip(code_bytes, mask, orig + bytes(len(code_bytes)))))
-        ours = compare.disasm(shown, self.addr)
+        ours = self.ours(res[0])
         sm = difflib.SequenceMatcher(None, ours, self.orig_asm, autojunk=False)
         return (len(ours) + len(self.orig_asm) - 2 * sum(b.size for b in sm.get_matching_blocks()) + len(diffs)
                 + 1000 * broken)
+
+
+    def hot_lines(self, variant):
+        """The lines of `variant`'s body, counted from 0, that compile to
+        instructions differing from the original's, from the line
+        numbers /Zd records. /Zd doesn't change the code, but its .bf and
+        .lf symbols confuse the sizes coff.py reads, so the code comes
+        from a plain compile."""
+        obj = self.compile(variant)
+        if obj is None:
+            return set()
+        try:
+            res = [r for r in self.results(obj) if r[0] in self.symbol_names]
+        finally:
+            os.remove(obj)
+        obj = self.compile(variant, ["/Zd"])
+        if obj is None:
+            return set()
+        try:
+            table = coff_lines(obj, self.symbol_names)
+        finally:
+            os.remove(obj)
+        if not res or not table or res[0][1]:
+            return set()
+        ours = self.ours(res[0])
+        sm = difflib.SequenceMatcher(None, ours, self.orig_asm, autojunk=False)
+        kept = set()
+        for b in sm.get_matching_blocks():
+            kept.update(range(b.a, b.a + b.size))
+        offset, bad = 0, []
+        for i, line in enumerate(ours):
+            if i not in kept:
+                bad.append(offset)
+            offset += len(line.split("\t", 1)[0].split())
+        first = variant[0].count("\n")
+        lines = set()
+        for at in bad:
+            line = max((n for va, n in table if va <= at), default=None)
+            if line is not None:
+                lines.add(line - 1 - first)
+        return {n for n in lines if n >= 0}
+
+
+def coff_lines(path, symbols):
+    """(offset, source line) pairs of the first of `symbols` in the COFF
+    object at `path`, from its line number table."""
+    import struct
+    d = open(path, "rb").read()
+    _, nsec, _, symptr, nsym, opt, _ = struct.unpack_from("<HHIIIHH", d, 0)
+    strtab = symptr + nsym * 18
+    names, i, bf = {}, 0, {}
+    while i < nsym:
+        o = symptr + i * 18
+        raw = d[o:o + 8]
+        if raw[:4] == b"\0\0\0\0":
+            at = strtab + struct.unpack_from("<I", raw, 4)[0]
+            name = d[at:d.index(b"\0", at)].decode("latin-1")
+        else:
+            name = raw.rstrip(b"\0").decode("latin-1")
+        sec, aux = struct.unpack_from("<h", d, o + 12)[0], d[o + 17]
+        names.setdefault(name, (i, sec))
+        if name == ".bf" and aux:
+            bf[sec] = struct.unpack_from("<H", d, o + 18 + 4)[0]
+        i += 1 + aux
+    hit = next((names[s] for s in symbols if s in names), None)
+    if not hit:
+        return []
+    index, sec = hit
+    o = 20 + opt + (sec - 1) * 40
+    ptr, = struct.unpack_from("<I", d, o + 28)
+    count, = struct.unpack_from("<H", d, o + 34)
+    base = bf.get(sec, 0)
+    out = []
+    for k in range(count):
+        va, line = struct.unpack_from("<IH", d, ptr + 6 * k)
+        if line:
+            out.append((va, base + line))
+    return sorted(out)
 
 
 DECL = re.compile(r"^(\s+)((?:const |unsigned |signed |static |register |struct |enum )*[A-Za-z_]\w*[\s\*]+)([^;=(){}]+);$")
@@ -643,34 +815,70 @@ def main():
                     break
         deadline = 0
 
+    stats = load_stats(args.name)
+    prior = load_stats("\0")
+    hot = set()
+
+    def focus(variant):
+        nonlocal hot
+        hot = s.hot_lines(variant)
+        hot |= {n + d for n in hot for d in (-1, 1)}
+
+    def pick(r):
+        kinds = sorted(set(MUTATIONS), key=lambda f: f.__name__)
+        return r.choices(kinds, [weight(stats, f.__name__) for f in kinds])[0]
+
     def candidate(seed, r):
         before, body, after = seed
+        used = []
         for _ in range(r.choice([1, 1, 1, 2, 3])):
-            if args.file and r.random() < 0.3:
+            if args.file and r.random() < 0.3 * weight(stats, "file_order") / weight(stats, "swap_operands"):
                 new = file_order((before, body, after), r)
                 if new:
                     before, body, after = new
+                    used.append("file_order")
                 continue
-            new = r.choice(MUTATIONS)(body, r)
-            if new:
-                body = new
-        return (before, body, after)
+            for _ in range(8):
+                f = pick(r)
+                new = f(body, r)
+                if not new:
+                    continue
+                lo, hi = changed_lines(body, new)
+                if not hot or f.__name__ in GLOBAL_REWRITES or r.random() < 0.25 \
+                        or any(lo <= n < max(hi, lo + 1) for n in hot):
+                    body = new
+                    used.append(f.__name__)
+                    break
+        return (before, body, after), used
 
+    if deadline:
+        focus(best)
     with ThreadPoolExecutor(args.j) as pool:
         while time.time() < deadline and best_score:
-            bodies = [candidate(cur, random.Random(rng.random())) for _ in range(args.j)]
-            for body, sc in zip(bodies, pool.map(s.score, bodies)):
+            made = [candidate(cur, random.Random(rng.random())) for _ in range(args.j)]
+            bodies = [m[0] for m in made]
+            for (body, used), sc in zip(made, pool.map(s.score, bodies)):
                 tried += 1
+                for kind in used:
+                    stats.setdefault(kind, [0, 0])[0] += 1
                 if sc is None:
                     continue
+                if sc < cur_score:
+                    for kind in used:
+                        stats[kind][1] += 1
                 if sc < best_score:
                     best, best_score = body, sc
                     print(f"  {tried:5d} tries: score {sc}", flush=True)
                     keep(args.name, best)
+                    save_stats(args.name, stats, prior)
+                    if best_score:
+                        focus(best)
                 if sc <= cur_score or rng.random() < 0.05:
                     cur, cur_score = body, sc
             if rng.random() < 0.02:
                 cur, cur_score = best, best_score
+    if tried:
+        save_stats(args.name, stats, prior)
     shutil.rmtree(s.tmp, ignore_errors=True)
     os.makedirs(OUT, exist_ok=True)
     keep(args.name, best)
