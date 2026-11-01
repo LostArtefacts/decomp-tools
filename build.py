@@ -115,10 +115,10 @@ def win(path):
     return path.replace("/", "\\")
 
 
-def run_tool(name, *args):
+def run_tool(name, *args, bin=None):
     """Runs an MSVC tool, or build.ml for "ml"; returns its exit code and
     its output, without the lines that only name the file."""
-    exe = BUILD["ml"] if name == "ml" else BUILD["bin"] + "\\" + name + ".exe"
+    exe = BUILD["ml"] if name == "ml" else (bin or BUILD["bin"]) + "\\" + name + ".exe"
     cmd = ([] if NATIVE else ["wine"]) + [host(exe), "/nologo", *args]
     try:
         r = subprocess.run(cmd, env=ENV, timeout=TIMEOUT, capture_output=True, text=True, errors="replace")
@@ -128,8 +128,8 @@ def run_tool(name, *args):
     return r.returncode, out
 
 
-def tool(name, *args):
-    code, out = run_tool(name, *args)
+def tool(name, *args, bin=None):
+    code, out = run_tool(name, *args, bin=bin)
     if out:
         print(out)
     if code:
@@ -384,18 +384,18 @@ def link_exe(objs, exe_objs=None, feats=()):
     made = {}
     for path in EXE_CONFIG["import_defs"]:
         lib = os.path.join(os.path.dirname(exe_objs[0]), os.path.splitext(os.path.basename(path))[0] + ".lib")
-        tool("lib", "/machine:i386", "/def:" + win(path), "/out:" + win(lib))
+        tool("lib", "/machine:i386", "/def:" + win(path), "/out:" + win(lib), bin=EXE_CONFIG["link_bin"] or None)
         made[os.path.basename(lib).lower()] = win(lib)
     libs = [made.get(lib.lower(), lib) for lib in EXE_CONFIG["libs"]]
     tool("link", *EXE_CONFIG["ldflags"], "/MAP:" + win(EXE_MAP), "/OUT:" + win(EXE),
-         *map(win, ordered), win(res), *libs)
+         *map(win, ordered), win(res), *libs, bin=EXE_CONFIG["link_bin"] or None)
     copy_header_fields(ORIGINAL, EXE)
     print("linked", EXE)
 
 
 def copy_header_fields(src, dst):
-    """Gives dst the original's link timestamp, the one header field the
-    linker has no option for."""
+    """Gives dst the original's link timestamp and linker version, the
+    header fields the linker has no option for."""
     with open(src, "rb") as f:
         orig = f.read(0x400)
     pe = struct.unpack_from("<I", orig, 0x3C)[0]
@@ -404,6 +404,8 @@ def copy_header_fields(src, dst):
         dpe = struct.unpack("<I", f.read(4))[0]
         f.seek(dpe + 8)
         f.write(orig[pe + 8:pe + 12])
+        f.seek(dpe + 24 + 2)
+        f.write(orig[pe + 24 + 2:pe + 24 + 4])
 
 
 def main():

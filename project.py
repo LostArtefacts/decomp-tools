@@ -86,6 +86,7 @@ DEFAULTS = {
         "defines": [],
         "link_order": "median",
         "ldflags": ["/SUBSYSTEM:WINDOWS", "/FIXED"],
+        "link_bin": "",  # another toolchain's bin for the exe's link (and lib), e.g. an older linker's layout; empty: build.bin
         "libs": ["libc.lib"],
         "import_defs": [],  # .def files of DLLs no library ships an import library for; the link builds them
         "features": {},
