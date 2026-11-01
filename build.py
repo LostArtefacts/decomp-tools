@@ -381,8 +381,14 @@ def link_exe(objs, exe_objs=None, feats=()):
     rsrc.write_res(res, rsrc.resources(image))
     linked = dict(zip(objs, exe_objs))
     ordered = [linked[o] for o in link_order(objs, read_symbols(), EXE_CONFIG["link_order"])]
+    made = {}
+    for path in EXE_CONFIG["import_defs"]:
+        lib = os.path.join(os.path.dirname(exe_objs[0]), os.path.splitext(os.path.basename(path))[0] + ".lib")
+        tool("lib", "/machine:i386", "/def:" + win(path), "/out:" + win(lib))
+        made[os.path.basename(lib).lower()] = win(lib)
+    libs = [made.get(lib.lower(), lib) for lib in EXE_CONFIG["libs"]]
     tool("link", *EXE_CONFIG["ldflags"], "/MAP:" + win(EXE_MAP), "/OUT:" + win(EXE),
-         *map(win, ordered), win(res), *EXE_CONFIG["libs"])
+         *map(win, ordered), win(res), *libs)
     copy_header_fields(ORIGINAL, EXE)
     print("linked", EXE)
 

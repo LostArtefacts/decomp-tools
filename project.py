@@ -87,6 +87,7 @@ DEFAULTS = {
         "link_order": "median",
         "ldflags": ["/SUBSYSTEM:WINDOWS", "/FIXED"],
         "libs": ["libc.lib"],
+        "import_defs": [],  # .def files of DLLs no library ships an import library for; the link builds them
         "features": {},
         "feature_sources": {},
     },
