@@ -9,7 +9,9 @@ calls and jumps out of them name their target's symbol, and addresses in
 the code become symbols: import slots `__imp__NAME@N` (from the import
 libraries in build.lib), rows of config/symbols.csv (with an offset into
 a data row), or labels on the bytes after a function up to the next row,
-emitted as data, for strings kept in the code. An address none of these
+for strings kept in the code; those bytes go in .data, so the functions
+keep their sizes, under public labels, so each piece ends where the next
+begins. An address none of these
 covers stops the run; add a row for it to config/symbols.csv.
 
 Instructions are written out as MASM mnemonics, then assembled, and any
@@ -110,8 +112,11 @@ class Writer:
             if not r["symbol"]:
                 sys.exit(f"{name} has no symbol in config/symbols.csv; give it one, e.g. _{name}")
             addr, size = int(r["address"], 16), int(r["size"])
-            self.funcs.append((name, r["symbol"].split()[0], addr, size,
-                               disasm(coff.Image(EXE).read(addr, size), addr)))
+            ins = disasm(coff.Image(EXE).read(addr, size), addr)
+            cut = [at for at, raw, mnem, ops in ins if mnem.startswith(".") or mnem == "(bad)"]
+            if cut:
+                sys.exit(f"{name}: its size in config/symbols.csv ({size}) cuts the instruction at {cut[0]:#x}")
+            self.funcs.append((name, r["symbol"].split()[0], addr, size, ins))
         self.raw = set()
 
     def next_row(self, addr):
@@ -169,10 +174,12 @@ class Writer:
 
     def source(self):
         used = {"imports": set(), "externs": set()}
-        body = []
+        body, data = [], []
         targets = {int(t, 16) for _, _, _, _, ins in self.funcs for _, _, m, o in ins
                    if BRANCH.match(m) for t in re.findall(r"^0x([0-9a-f]+)$", o)}
-        data_refs = set()
+        data_refs = {int(v, 16) for _, _, _, _, ins in self.funcs for _, _, _, ops in ins
+                     for v in re.findall(r"0x([0-9a-f]+)", ops)
+                     if (self.label(int(v, 16)) or "").startswith("D")}
         for name, sym, addr, size, ins in self.funcs:
             body.append(f"{sym} proc public")
             for at, raw, mnem, ops in ins:
@@ -187,14 +194,15 @@ class Writer:
                 blob = coff.Image(EXE).read(addr + size, end - addr - size)
                 cuts = sorted(set(refs) | {addr + size, end})
                 for a, b in zip(cuts, cuts[1:]):
-                    if a in refs:
-                        body.append(f"D{a:x} label byte")
-                    body.extend(data_lines(blob[a - addr - size:b - addr - size]))
-                body.append("")
+                    data.append(f"    public D{a:x}")
+                    data.append(f"D{a:x} label byte")
+                    data.extend(data_lines(blob[a - addr - size:b - addr - size]))
         imps = import_symbols(used["imports"])
         missing = used["imports"] - set(imps)
         if missing:
             sys.exit(f"no import library defines {', '.join(sorted(missing))}")
+        if data:
+            body += ["    .data", ""] + data
         text = "\n".join(body)
         text = re.sub(r"\0imp:(\w+)", lambda m: imps[m[1]], text)
         local = {sym for _, sym, _, _, _ in self.funcs}
