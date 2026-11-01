@@ -194,6 +194,7 @@ puts it on `main` at the same commit.
 | `permute.py` | searches rewrites of one function (declaration order, operand order, statement order, if/else) for a byte match, compiling each variant alone |
 | `farm.py` | runs permute.py over every hooks.allow_diff function, several at once, unattended; keeps matching bodies in build/farm, and `--apply` writes them into src/ |
 | `rpermute.py` | runs permute.py on project.toml's [remote] machine, such as a faster Windows box, and copies its result back |
+| `asmgen.py` | writes MASM source for functions no compiler wrote (hand-written patches) from the exe's bytes, with symbols for calls, data and imports, checked byte for byte |
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 
