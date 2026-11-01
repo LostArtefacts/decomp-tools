@@ -1040,7 +1040,7 @@ def main():
     if first is None:
         sys.exit("the function doesn't build as it is: " + getattr(s, "why", "unknown reason"))
     print(f"{args.name}: {src}, score {first} as written", flush=True)
-    if first == 0:
+    if first == 0 and not args.pad:
         print("already matches")
         return 0
     rng = random.Random(args.s)
@@ -1061,7 +1061,7 @@ def main():
     deadline = time.time() + args.t if best_score else 0
     tried = 0
 
-    if args.pad and best_score:
+    if args.pad:
         found = pad(s, best, args.limit if args.limit != 3000 else 32, args.j)
         if found:
             best, best_score = found, 0
