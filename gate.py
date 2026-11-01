@@ -12,9 +12,10 @@ is a first line `// cflags: ...`, which build.py reads as the file's
 compiler flags.
 
 hooks.compare builds src/ and fails the commit unless every function it
-defines matches the original byte for byte (`just compare`). src/ and
-config/ must have no unstaged changes, so what is built is what is
-committed.
+defines matches the original byte for byte (`just compare`), and unless
+every function HEAD's progress image shows as matching is still
+compiled. src/ and config/ must have no unstaged changes, so what is
+built is what is committed.
 
 hooks.one_function allows at most one newly matching function per
 commit, or two with hooks.pairs, for two functions that only match
@@ -131,8 +132,9 @@ def pre_commit():
         return 1
     import compare
     symbols, names = compare.read_symbols(), rows()
-    matched, differ = set(), []
+    matched, differ, compiled = set(), [], set()
     for name, same, *_ in compare.results(symbols):
+        compiled.add(names[name][0])
         if same:
             matched.add(names[name][0])
         else:
@@ -143,6 +145,16 @@ def pre_commit():
     differ = [name for name in differ if names[name][1] not in allowed]
     for name in excused:
         print(f"pre-commit: {names[name][1]} differs, allowed by hooks.allow_diff or DECOMP_ALLOW_DIFF")
+    if HOOKS["compare"]:
+        before = matched_at_head() or set()
+        by_address = {a: n for a, n in names.values()}
+        gone = sorted(a for a in before - compiled if by_address.get(a) not in allowed)
+        if gone:
+            print("pre-commit: these functions matched at HEAD but aren't compiled any more")
+            print("(inlined everywhere now, or their definition went missing):")
+            for address in gone:
+                print(f"  {address:#010x} {by_address.get(address, '?')}")
+            return 1
     if HOOKS["compare"] and differ:
         print("pre-commit: these functions don't match the original (just compare):")
         for name in differ:
