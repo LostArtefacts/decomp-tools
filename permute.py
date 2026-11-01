@@ -51,10 +51,10 @@ def keep(name, variant):
     the whole file as NAME.file."""
     before, body, after = variant
     os.makedirs(OUT, exist_ok=True)
-    open(os.path.join(OUT, f"{name}.c"), "w").write(body)
+    open(os.path.join(OUT, f"{name}.c"), "w", encoding="utf-8", newline="\n").write(body)
     whole = os.path.join(OUT, f"{name}.file")
     if FILE_MODE[0] and (before, after) != FILE_MODE[1]:
-        open(whole, "w", encoding="utf-8").write(before + body + after)
+        open(whole, "w", encoding="utf-8", newline="\n").write(before + body + after)
     elif os.path.exists(whole):
         os.remove(whole)
 

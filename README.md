@@ -193,6 +193,7 @@ puts it on `main` at the same commit.
 | `fn.py` | everything about one function in one call, and the order to do them in |
 | `permute.py` | searches rewrites of one function (declaration order, operand order, statement order, if/else) for a byte match, compiling each variant alone |
 | `farm.py` | runs permute.py over every hooks.allow_diff function, several at once, unattended; keeps matching bodies in build/farm, and `--apply` writes them into src/ |
+| `rpermute.py` | runs permute.py on project.toml's [remote] machine, such as a faster Windows box, and copies its result back |
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 

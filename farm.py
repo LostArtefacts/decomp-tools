@@ -77,7 +77,7 @@ def search(name, args, seed):
             open(marker, "w").write(open(best).read())
         if done.returncode == 0:
             body = open(best).read()
-            open(found(name), "w").write(body)
+            open(found(name), "w", encoding="utf-8", newline="\n").write(body)
             whole = os.path.splitext(best)[0] + ".file"
             if os.path.exists(whole):
                 shutil.copy(whole, os.path.join(OUT, f"{name}.file"))

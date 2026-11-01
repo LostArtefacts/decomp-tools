@@ -112,6 +112,11 @@ DEFAULTS = {
         "no_comments": False,  # pre-commit fails on comments, tabs or CRs in staged src/ files
         "allow_diff": [],  # functions committed though they differ; adding one decompiles it
     },
+    "remote": {
+        "host": "",  # an ssh host with its own copy of the project, for rpermute.py
+        "root": "",  # that copy's directory, as the remote shell spells it
+        "python": "python",  # the remote's Python
+    },
     "reference": {
         "source": "",  # a reference source tree, such as the developers' own, for probe.py and fn.py
         "prefer": [],  # its directories whose definitions fn.py shows first, as the closest to the target
