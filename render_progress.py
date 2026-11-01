@@ -30,6 +30,7 @@ identical functions; it counts as a function but takes no space in the
 treemap.
 """
 import csv
+import fnmatch
 import glob
 import html
 import os
@@ -107,7 +108,8 @@ def compare_built_le(root: str) -> dict[int, bool]:
 
 def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None = None) -> list[Symbol]:
     with open(os.path.join(root, "config/symbols.csv")) as f:
-        rows = [r for r in csv.DictReader(f) if int(r["address"], 16) < GAME_END]
+        rows = [r for r in csv.DictReader(f) if int(r["address"], 16) < GAME_END
+                and not any(fnmatch.fnmatchcase(r["name"], g) for g in project.config["game"]["progress_exclude"])]
     if built_svg is None and LE:
         if os.path.abspath(root) == ROOT:
             subprocess.run([sys.executable, os.path.join(ROOT, "tools/build.py")], check=True,

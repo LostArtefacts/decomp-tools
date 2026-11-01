@@ -42,6 +42,7 @@ DEFAULTS = {
         "original": REQUIRED,  # where its verified copy goes, an ASCII path
         "game_end": REQUIRED,  # the game's code ends here; libraries follow
         "title": "",  # the progress chart's title; defaults to the name
+        "progress_exclude": [],  # name globs of rows no source makes (linker thunks, data), left out of the progress
         "window_title": "",  # play.py looks for a window with this title
         "locale": "",  # play.py's LANG and LC_ALL, such as ja_JP.UTF-8; empty keeps the user's
         "screen": "640x480x24",  # play.py's Xvfb screen
