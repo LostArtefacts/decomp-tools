@@ -18,6 +18,7 @@ ROOT = project.ROOT
 EXE = project.ORIGINAL
 
 
+STATIC = 3  # IMAGE_SYM_CLASS_STATIC
 LABEL = 6  # IMAGE_SYM_CLASS_LABEL
 UNINITIALIZED = 0x80  # IMAGE_SCN_CNT_UNINITIALIZED_DATA
 
@@ -57,22 +58,28 @@ def compiled_functions(symbols):
     # object behind. They are read in link order: of an inline function
     # several objects define, the linker keeps the first copy.
     seen = set()
-    for _, path in build.sources():
+    for src, path in build.sources():
         if os.path.basename(path).startswith(build.GLUE_PREFIX):
             continue  # the DLL's own code
         obj = coff.Object(os.path.join(ROOT, path))
-        for sym in obj.externals():
-            if sym.section <= 0 or sym.name not in symbols or sym.name in seen:
+        rel = os.path.relpath(src, "src").replace("\\", "/")
+        named = [(sym.name, sym) for sym in obj.externals()]
+        named += [(f"{rel}:{sym.name}", sym) for sym in obj.symbols
+                  if sym and sym.storage == STATIC and sym.section > 0 and f"{rel}:{sym.name}" in symbols]
+        for key, sym in named:
+            if sym.section <= 0 or key not in symbols or key in seen:
                 continue
-            seen.add(sym.name)
             sec = obj.sections[sym.section - 1]
+            if not sec.flags & coff.CODE:
+                continue  # a global defined in src/, not a function
+            seen.add(key)
             # Labels (storage class 6) are case targets inside a function;
             # a switch's jump table starts at a static symbol after it.
             starts = sorted(s.value for s in obj.symbols
                             if s and s.section == sym.section and s.value > sym.value
                             and s.storage != LABEL)
             end = starts[0] if starts else len(sec.data)
-            addr = symbols[sym.name][0]
+            addr = symbols[key][0]
             code = bytearray(sec.data[sym.value:end])
             mask = bytearray(len(code))
             data = []
@@ -96,9 +103,9 @@ def compiled_functions(symbols):
                 addend = int.from_bytes(code[pos:pos + 4], "little")
                 value = to + addend - (addr + pos + 4 if typ == coff.REL32 else 0)
                 code[pos:pos + 4] = (value & 0xFFFFFFFF).to_bytes(4, "little")
-            while len(code) > symbols[sym.name][1] and code[-1] in (0x90, 0xCC):
+            while len(code) > symbols[key][1] and code[-1] in (0x90, 0xCC):
                 code.pop()
-            yield sym.name, bytes(code), bytes(mask), data
+            yield key, bytes(code), bytes(mask), data
 
 
 def disasm(code, addr):
