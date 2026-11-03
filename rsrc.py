@@ -14,8 +14,10 @@ RESOURCE_DIRECTORY = 2
 
 
 def resources(path):
-    """Yields (type, name, language, data) for each resource in the image.
-    type and name are an int ID or a string."""
+    """Yields (type, name, language, data) for each resource in the image,
+    in the order of their data: cvtres lays the data out in .res order, so
+    that is the order of the original .res. type and name are an int ID or
+    a string."""
     img = coff.Image(path)
     pe = struct.unpack_from("<I", img.data, 0x3C)[0]
     rva, size = struct.unpack_from("<II", img.data, pe + 24 + 96 + 8 * RESOURCE_DIRECTORY)
@@ -34,11 +36,14 @@ def resources(path):
                 key = tree[at + 2:at + 2 + 2 * n].decode("utf-16-le")
             yield key, ptr
 
+    found = []
     for typ, p1 in entries(0):
         for name, p2 in entries(p1 & 0x7FFFFFFF):
             for lang, p3 in entries(p2 & 0x7FFFFFFF):
                 data_rva, data_size = struct.unpack_from("<II", tree, p3)
-                yield typ, name, lang, img.read(img.base + data_rva, data_size)
+                found.append((data_rva, typ, name, lang, data_size))
+    for data_rva, typ, name, lang, data_size in sorted(found):
+        yield typ, name, lang, img.read(img.base + data_rva, data_size)
 
 
 def id_or_name(key):
