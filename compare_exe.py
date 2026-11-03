@@ -264,11 +264,11 @@ def report_imports(ours, orig):
     bytes_line("IAT", ours.read(ours.base + rva_o, size_o), orig.read(orig.base + rva, size))
 
 
-def read_map():
+def read_map(path=MAP):
     """{symbol: (address, object)} from the link map."""
-    text = open(MAP, encoding="latin-1").read()
+    text = open(path, encoding="latin-1").read()
     if "Preferred load address is 00400000" not in text:
-        sys.exit(f"{MAP} is not the exe's map: run `just exe`")
+        sys.exit(f"{path} is not the exe's map: run `just exe`")
     syms = {}
     line_re = re.compile(r"^\s*[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-f]{8})\s+(?:f\s+)?(?:i\s+)?(\S+)\s*$")
     for line in text.splitlines():
