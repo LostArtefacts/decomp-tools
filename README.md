@@ -53,6 +53,16 @@ And the DOS game, GOG's release, as read from its LE header and code:
 TRX's `docs/symbols/` has a manifest of named functions and globals
 for each of them.
 
+## IDA function inventory
+
+`ida/export_functions.idc` exports the functions already defined in an
+IDA database as `address,size,name` CSV. After autoanalysis, run it with
+**File > Script file** and save to the path configured as
+`ghidra.functions` in the game repository. Run `seed_symbols.py` to
+import the inventory. Sizes cover each function's entry chunk; detached
+tail chunks are not included. Ghidra analysis remains available through
+the shared `analyze` recipe.
+
 ## Using it in a game repository
 
 A game repository includes this repository as a git submodule at
