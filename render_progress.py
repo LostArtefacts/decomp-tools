@@ -859,21 +859,24 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
     red = count.sections[SymbolStatus.NONMATCHING]
     done = (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)
 
+    def kb(n: int) -> str:
+        return f"{n / 1000:.0f}"
+
     def k(n: int) -> str:
-        return f"{n / 1000:.0f}k"
+        return f"{kb(n)} KB"
 
     def exe_row(title: str, same: int, whole: int, notes: list[str]) -> SummaryRow:
         bar = ProgressBar({SymbolStatus.NAMED: same, SymbolStatus.TODO: whole - same})
-        return SummaryRow(title, bar, [f"{k(same)}/{k(whole)}"] + notes)
+        return SummaryRow(title, bar, [f"{kb(same)}/{k(whole)}"] + notes)
 
     rows = [
         SummaryRow("Game functions", count,
                    [f"{sum(count.sections[s] for s in done)}/{count.total}"]
                    + ([f"+{red} nonmatching"] if red else [])),
         SummaryRow("Game code", size,
-                   [f"{k(sum(size.sections[s] for s in done))}/{k(size.total)}"]
+                   [f"{kb(sum(size.sections[s] for s in done))}/{k(size.total)}"]
                    + ([f"+{k(size.sections[SymbolStatus.NONMATCHING])} nonmatching"] if red else [])
-                   + ([f"{data[0]}/{data[1]} data"] if data else [])),
+                   + ([f"{data[0]}/{data[1]} data segments"] if data else [])),
     ]
     if exe:
         same, whole = exe["file"]
