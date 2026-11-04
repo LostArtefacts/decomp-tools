@@ -14,7 +14,7 @@ first in build.watcom that has one. MASM is the directory holding ML.EXE
 rebuilt when its source or any header or include file in src/ is newer,
 or when its flags changed (build/obj/flags.json records them).
 """
-import glob, json, os, subprocess, sys
+import glob, json, os, subprocess, sys, tempfile
 
 import project
 from project import ROOT, masm, watcom
@@ -43,6 +43,18 @@ def env(w):
     return e
 
 
+def run(cmd, w, cwd=None):
+    """Runs `cmd` under Wine with the compiler's environment: (exit code,
+    output). The output goes through a file, not a pipe: a pipe stays
+    open in wine's helper processes and every call would wait about
+    four seconds for them. wcc386 leaves NAME.err in `cwd` on errors."""
+    with tempfile.TemporaryFile("w+", errors="replace") as f:
+        code = subprocess.run(cmd, env=env(w), cwd=cwd, stdin=subprocess.DEVNULL, stdout=f,
+                              stderr=subprocess.STDOUT).returncode
+        f.seek(0)
+        return code, f.read()
+
+
 def compile(w, src, obj):
     if src.endswith(".asm"):
         cmd = ["wine", os.path.join(masm(), "ML.EXE"), *AFLAGS, "/I" + winpath("src"),
@@ -50,10 +62,9 @@ def compile(w, src, obj):
     else:
         cmd = ["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *cflags(src),
                "-fo=" + winpath(obj), winpath(src)]
-    r = subprocess.run(cmd, env=env(w), capture_output=True, text=True)
-    out = "\n".join(l for l in r.stdout.splitlines() + r.stderr.splitlines()
-                    if l.strip() and not l.startswith(" Assembling:"))
-    if r.returncode or not os.path.exists(obj):
+    code, out = run(cmd, w)
+    out = "\n".join(l for l in out.splitlines() if l.strip() and not l.startswith(" Assembling:"))
+    if code or not os.path.exists(obj):
         sys.exit(f"{out}\nerror: {os.path.relpath(src, ROOT)} failed to compile")
     if out:
         print(out)

@@ -24,7 +24,7 @@ a header can move another module's variables into the next block.
 The source is preprocessed with wcc386 and parsed with pycparser. With
 -v, prints every variable with its block and hash.
 """
-import csv, glob, os, re, subprocess, sys
+import csv, glob, os, re, subprocess, sys, tempfile
 
 import build_watcom as build
 from pycparser import c_ast, c_parser
@@ -59,10 +59,14 @@ def hashpjw(name):
 
 def preprocess(src):
     w = build.watcom()
-    r = subprocess.run(["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *build.cflags(src), "-p",
-                        build.winpath(src)], env=build.env(w), capture_output=True, text=True)
+    with tempfile.TemporaryFile("w+", errors="replace") as f:
+        subprocess.run(["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *build.cflags(src), "-p",
+                        build.winpath(src)], env=build.env(w), stdin=subprocess.DEVNULL, stdout=f,
+                       stderr=subprocess.DEVNULL)
+        f.seek(0)
+        text = f.read()
     out, cont = [], False
-    for line in r.stdout.split("\n"):
+    for line in text.split("\n"):
         if cont or line.startswith("#"):
             cont = line.rstrip().endswith("\\")
             line = ""
