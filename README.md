@@ -278,10 +278,12 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `watcom` | `["~/opt/watcom10.6"]` | `watcom`: globs searched for Watcom C 10.6 (with `BINNT`, `H`, `LIB386`); `WATCOM` overrides it |
 | `masm` | `["~/opt/masm611"]` | `watcom`: globs searched for a directory with MASM 6.11's `ML.EXE`; `MASM` overrides it |
 | `hook_base` | `0x200000` | `watcom`: where `game` loads the compiled functions |
+| `file_cflags` | `{}` | `watcom`: `{stem = [flags]}`, the whole flag list for one `src/` file instead of `cflags`, such as `player = ["-bt=dos", "-od", "-s", "-5r", "-zq"]` for `src/player.c` |
 
-With `watcom`, `cflags` and `asflags` go to `wcc386` and `ML`
-unchanged, and an object is rebuilt when its source or any `.h` or
-`.inc` in `src/` is newer. The search lists are tried in order, the
+With `watcom`, `cflags` (or the file's `file_cflags`) and `asflags` go
+to `wcc386` and `ML` unchanged, and an object is rebuilt when its source
+or any `.h` or `.inc` in `src/` is newer, or its flags changed. `bss`,
+`fn -d` and `permute` compile and preprocess with the same flags. The search lists are tried in order, the
 newest match of each first. `encoding`, `crlf`, `bin`, `include`,
 `lib`, `ml`, `timeout`, `hook` and `[dll]` and `[exe]` are `msvc` only.
 

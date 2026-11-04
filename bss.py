@@ -59,7 +59,7 @@ def hashpjw(name):
 
 def preprocess(src):
     w = build.watcom()
-    r = subprocess.run(["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *build.CFLAGS, "-p",
+    r = subprocess.run(["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *build.cflags(src), "-p",
                         build.winpath(src)], env=build.env(w), capture_output=True, text=True)
     out, cont = [], False
     for line in r.stdout.split("\n"):

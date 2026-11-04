@@ -69,6 +69,7 @@ DEFAULTS = {
         "include": [r"C:\dx5\include", r"C:\msvc5\include"],
         "lib": [r"C:\dx5\lib", r"C:\msvc5\lib"],
         "cflags": REQUIRED,
+        "file_cflags": {},  # watcom: {stem = [flags]}, a src/ file's flags instead of cflags
         "encoding": "cp1252",  # what src/'s UTF-8 is converted to for cl
         "crlf": False,  # convert src/'s LF line endings to CRLF for cl
         "ml": r"C:\masm611\bin\ml.exe",  # the assembler for src/'s .s and .asm files
