@@ -545,37 +545,56 @@ class FunctionGrid(Container):
         self.__post_init__()
 
 
+def gutter_scale(sizes: list[Decimal], box: Box) -> Decimal:
+    """The t that has squares of side t * sqrt(size), each with a gutter
+    added to its side, fill `box`: the quadratic sum((t * sqrt(size) +
+    GRID_SQUARE_MARGIN) ** 2) = area, solved for t."""
+    g = GRID_SQUARE_MARGIN
+    a = sum(sizes)
+    b = 2 * g * sum(size.sqrt() for size in sizes)
+    c = len(sizes) * g * g - box.dx * box.dy
+    return (-b + (b * b - 4 * a * c).sqrt()) / (2 * a)
+
+
+def trim(side: Decimal) -> Decimal:
+    """A slot's side less its gutter. A slot too thin for one (squarify
+    gives the last, smallest functions skinny slots) keeps a 1px cell,
+    still in its place."""
+    return min(side, max(side - GRID_SQUARE_MARGIN, Decimal(1)))
+
+
 class FunctionTreeGrid(Container):
+    """The functions as a treemap. Each cell's slot holds its area and a
+    gutter, so the cells keep their areas apart from one even gutter."""
+
     def __init__(self, all_functions: list[Symbol]) -> None:
         super().__init__()
+        rows = (len(all_functions) + GRID_MAX_SQUARES - 1) // GRID_MAX_SQUARES
+        # The slots on the right and bottom edges keep their gutters
+        # outside the grid.
         box = Box(
             x1=ZERO,
             y1=ZERO,
             x2=GRID_WIDTH + GRID_SQUARE_MARGIN,
-            y2=(
-                (
-                    (len(all_functions) + GRID_MAX_SQUARES - 1)
-                    // GRID_MAX_SQUARES
-                )
-                * (GRID_SQUARE_SIZE + GRID_SQUARE_MARGIN)
-            )
-            + GRID_SQUARE_MARGIN,
+            y2=rows * (GRID_SQUARE_SIZE + GRID_SQUARE_MARGIN),
         )
+        functions = [function for function in all_functions if function.size]
+        t = gutter_scale([Decimal(function.size) for function in functions], box)
 
         for result in squarify(
-            [function for function in all_functions if function.size],
-            key=lambda function: Decimal(function.size),
+            functions,
+            key=lambda function: (t * Decimal(function.size).sqrt() + GRID_SQUARE_MARGIN) ** 2,
             box=box,
         ):
-            result.x2 = max(ZERO, result.x2 - GRID_SQUARE_MARGIN)
-            result.y2 = max(ZERO, result.y2 - GRID_SQUARE_MARGIN)
-
+            # A 1px cell on the edge moves into its own gutter to stay
+            # in the grid.
+            dx, dy = trim(result.dx), trim(result.dy)
             self.children.append(
                 Rectangle(
-                    x=result.x1,
-                    y=result.y1,
-                    dx=result.dx,
-                    dy=result.dy,
+                    x=min(result.x1, box.x2 - GRID_SQUARE_MARGIN - dx),
+                    y=min(result.y1, box.y2 - GRID_SQUARE_MARGIN - dy),
+                    dx=dx,
+                    dy=dy,
                     class_name=result.item.status.value,
                     title=result.item.signature,
                 )
