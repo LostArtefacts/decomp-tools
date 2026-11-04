@@ -24,7 +24,7 @@ With game.format = "le", it also counts the data segments that match,
 and once the standalone exe is built it adds four rows of it: its code,
 initialized data and BSS, each split into the bytes built from source
 (our modules and the libraries, green), from asmgen.py's disassembly
-(yellow) and cut from the original as blobs by link_le.py (red); and
+or with bytes written as `db` in an asm module's code (yellow) and cut from the original as blobs by link_le.py (red); and
 its image bytes identical to the original's, split the same way, then
 the ones that differ.
 A function without a size in symbols.csv takes the one in
@@ -873,13 +873,41 @@ class ExeStatsLE(TypedDict):
 def generated(path: str) -> bool:
     """Whether the object at `path` is built from asmgen.py's output: a
     src/ .asm that opens with `.586p` and has no `.model`, as asmgen
-    writes them and the game's own assembly never is."""
+    writes them and the game's own assembly never is, or one with a
+    `db` in a code segment, bytes the assembler was not given as
+    instructions (asmgen's, or hand-written for what MASM cannot
+    encode). A `db` in a data segment is data, as anyone writes it."""
     source = os.path.join(ROOT, "src", os.path.splitext(os.path.basename(path))[0] + ".asm")
     if not os.path.exists(source):
         return False
     with open(source, errors="replace") as f:
         text = f.read()
-    return text.lstrip().startswith(".586p") and ".model" not in text
+    return (text.lstrip().startswith(".586p") and ".model" not in text) or db_in_code(text)
+
+
+def db_in_code(text: str) -> bool:
+    """Whether MASM source `text` has a `db` line in a code segment (one
+    of a class with CODE in its name, _TEXT, or after `.code`)."""
+    code: dict[str, bool] = {}
+    current = False
+    for line in text.splitlines():
+        s = line.split(";")[0].strip()
+        low = s.lower()
+        m = re.match(r"(\S+)\s+segment\b(.*)", s, re.I)
+        if m:
+            name = m.group(1).upper()
+            if "'" in m.group(2):
+                code[name] = "CODE" in m.group(2).upper()
+            current = code.get(name, name == "_TEXT")
+        elif re.match(r"\S+\s+ends\b", low):
+            current = False
+        elif low.startswith(".code"):
+            current = True
+        elif low.startswith("."):
+            current = current and not low.startswith((".data", ".const", ".fardata", ".stack"))
+        elif current and re.match(r"(\S+\s+)?db\b", low):
+            return True
+    return False
 
 
 def exe_stats_le() -> ExeStatsLE | None:
