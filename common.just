@@ -81,7 +81,7 @@ fn *args: _orig
     python3 tools/fn.py {{ args }}
 
 # Search source variants of NAME for a byte match (-j JOBS -t SECONDS)
-permute name *args: _pe _orig
+permute name *args: _orig
     python3 tools/permute.py {{ name }} {{ args }}
 
 # Render docs/progress.svg from symbols.csv and the build

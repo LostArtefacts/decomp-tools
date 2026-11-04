@@ -232,10 +232,12 @@ class Scorer:
         open(c, "w", encoding="utf-8", newline="\n").write("".join(variant))
         cmd = ["wine", os.path.join(self.watcom, "BINNT", "WCC386.EXE"), *self.flags, *extra,
                "-fo=" + build_watcom.winpath(obj), build_watcom.winpath(c)]
-        r = subprocess.run(cmd, env=build_watcom.env(self.watcom), capture_output=True, text=True)
+        code, out = build_watcom.run(cmd, self.watcom, cwd=self.tmp)
         os.remove(c)
-        if r.returncode or not os.path.exists(obj):
-            self.why = "wcc386 failed:\n" + "\n".join(l for l in (r.stdout + r.stderr).splitlines()
+        if os.path.exists(c[:-2] + ".err"):
+            os.remove(c[:-2] + ".err")
+        if code or not os.path.exists(obj):
+            self.why = "wcc386 failed:\n" + "\n".join(l for l in out.splitlines()
                                                        if "rror" in l)[:1500]
             if os.path.exists(obj):
                 os.remove(obj)

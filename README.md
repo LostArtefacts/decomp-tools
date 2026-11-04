@@ -136,7 +136,7 @@ just tools-init hooks
 | `decompile [ADDR...]` | write Ghidra's pseudocode to `build/decomp/` |
 | `probe [-j N]` | compile the reference source tree and score each of its functions against the original |
 | `fn NAME [-d\|-g\|-a]`, `fn --next [N]` | one function: target file, the reference's definition and what `src/` lacks; its diff; Ghidra's version; what to do next |
-| `permute NAME [-j N] [-t S]`, `permute NAME --decls` | search source variants of a function for a byte match; `--decls` tries every order of its local declarations, which decides VC5's term and register order |
+| `permute NAME [-j N] [-t S]`, `permute NAME --decls`, `permute NAME --order` | search source variants of a function for a byte match; `--decls` tries every order of its local declarations, which decides VC5's term and register order; `--order` hill-climbs over the order of independent statements only |
 | `progress` | build, then render `docs/progress.svg` |
 | `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers (a `Decompile` subject may run over 50 for a long name), and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
@@ -151,7 +151,9 @@ neighbours); `-d` builds and shows a unified diff of normalized lines
 (offset, instruction) with registers, `[esp+N]`/`[ebp-N]` offsets and
 jump targets masked, then one unmasked, `-a` uncapped; `-g` is Ghidra's;
 `--next N` lists the functions of `progress.compiled` modules still in
-assembly. `compare-exe`, `dxsdk`, `manifest` and `probe` are `pe` only;
+assembly. `permute` compiles each variant with `wcc386` and the file's
+flags and scores it by the same masked and unmasked diffs (`--pad`,
+`--plan` and `--sweep` are `pe` only). `compare-exe`, `dxsdk`, `manifest` and `probe` are `pe` only;
 these are `le` only:
 
 | Recipe | Does |

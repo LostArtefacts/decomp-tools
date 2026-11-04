@@ -2,6 +2,7 @@
 
     permute.py NAME [-j JOBS] [-t SECONDS] [-s SEED]
     permute.py NAME --decls [-j JOBS] [--limit N]
+    permute.py NAME --order [-j JOBS] [-t SECONDS]
 
 --start FILE searches from the variant in FILE instead, when it builds
 and scores better than the definition in src/.
@@ -53,6 +54,21 @@ one above it, that makes the most of them match, and prints that plan.
 Only the count matters to VC5, so the plan can be met with any real
 declarations.
 
+--order climbs over statement orders only: it moves one simple
+statement within its run of statements at one indent, past only
+statements it is independent of (neither calls a function, neither
+mentions what the other assigns), scores -j such moves a round and
+takes the best when it is no worse, and returns to the best order after
+20 rounds without progress. It suits functions whose instructions
+match but are scheduled differently, such as a block of stores.
+
+With game.format = "le", lefn.py's Scorer compiles each variant with
+wcc386 under Wine, with the file's flags (build.file_cflags), and
+scores it as `fn.py NAME -d` diffs it: ten per masked diff line, one per
+unmasked one, 0 for a byte match, plus 1000 per other function of the
+file that stops matching and 500 when the function outgrows its slot.
+--pad, --plan and --sweep are pe only.
+
 src/ is never written. The best variant goes to
 build/permute/NAME.c, and the change is printed as a diff to apply by
 hand; run the full compare after applying it, since a change can flip
@@ -67,6 +83,7 @@ ROOT = project.ROOT
 os.chdir(ROOT)
 
 OUT = "build/permute"
+LE = project.config["game"]["format"] == "le"
 COMPARE_LOCK = threading.Lock()  # results() reads build.sources, patched per call
 FILE_MODE = [False, None]  # --file, and the text around the function in src/
 COMMUTATIVE = ["+", "*", "&", "|", "^", "==", "!="]
@@ -1019,6 +1036,113 @@ def declaration_orders(body, limit, rng):
     return out
 
 
+LOCAL_DECL = re.compile(r"^\s+[A-Za-z_][\w\s\*]*\s\**[A-Za-z_]\w*(\s*,\s*\**\w+)*;$")
+CALL = re.compile(r"\b(?!sizeof\b|if\b|while\b|for\b|switch\b|return\b)[A-Za-z_]\w*\s*\(")
+WRITE = re.compile(r"^\s*(?:(\+\+|--)\s*)?([^=;]+?)\s*(?:(?:[-+*/%&|^]|<<|>>)?=(?!=)|\+\+|--|;)")
+
+
+def order_runs(body):
+    """Runs (first, last) of body's lines that are simple statements at
+    one indent, not a braceless if/else/loop body, not declarations."""
+    lines = body.split("\n")
+
+    def simple(i):
+        m = SIMPLE.match(lines[i])
+        if not m or CONTROL.match(lines[i]) or LOCAL_DECL.match(lines[i]):
+            return None
+        prev = lines[i - 1].strip() if i else "{"
+        if not prev.endswith((";", "{", "}")) and not prev.startswith(("case ", "default")):
+            return None
+        return m.group(1)
+    runs, i = [], 1
+    while i < len(lines):
+        ind = simple(i)
+        j = i
+        while ind and j + 1 < len(lines) and simple(j + 1) == ind:
+            j += 1
+        if ind and j > i:
+            runs.append((i, j))
+        i = j + 1
+    return lines, runs
+
+
+def written(stmt):
+    """The lvalue a simple statement assigns, or None (a call, or a form
+    this doesn't know): such a statement never moves past another."""
+    if CALL.search(stmt):
+        return None
+    m = WRITE.match(stmt)
+    return m and m[2].strip()
+
+
+def mentions(path, stmt):
+    return re.search(r"(?<![\w.>])" + re.escape(path) + r"(?!\w)", stmt) or (
+        "[" in path and mentions(path.split("[", 1)[0], stmt))
+
+
+def independent(a, b):
+    wa, wb = written(a), written(b)
+    return wa and wb and not mentions(wa, b) and not mentions(wb, a)
+
+
+def order_move(body, rng):
+    """Moves one statement of a run to another place in it, past only
+    statements it is independent of (see written())."""
+    lines, runs = order_runs(body)
+    if not runs:
+        return None
+    a, b = rng.choice(runs)
+    i = rng.randint(a, b)
+    k = rng.randint(a, b) if rng.random() < 0.5 else min(b, max(a, i + rng.choice([-1, 1])))
+    if k == i:
+        return None
+    lo, hi = (i + 1, k + 1) if k > i else (k, i)
+    if not all(independent(lines[i], lines[n]) for n in range(lo, hi)):
+        return None
+    lines.insert(k, lines.pop(i))
+    return "\n".join(lines)
+
+
+def order_climb(s, best, best_score, args, keep_best):
+    """Hill climb over statement orders (--order): each round scores -j
+    moves of one statement from the current order and takes the best of
+    them when it is no worse; a sideways step is taken, so the climb can
+    cross plateaus, and after 20 rounds without progress it goes back
+    to the best."""
+    rng = random.Random(args.s)
+    cur, cur_score = best, best_score
+    deadline, tried, stale = time.time() + args.t, 0, 0
+    _, runs = order_runs(best[1])
+    print(f"{sum(b - a + 1 for a, b in runs)} statements in {len(runs)} runs", flush=True)
+    with ThreadPoolExecutor(args.j) as pool:
+        while time.time() < deadline and best_score:
+            made = []
+            for _ in range(args.j * 20):
+                body = order_move(cur[1], rng)
+                if body and body not in made:
+                    made.append(body)
+                if len(made) == args.j:
+                    break
+            if not made:
+                break
+            scored = [(sc, b) for b, sc in zip(made, pool.map(lambda b: s.score((cur[0], b, cur[2])), made))
+                      if sc is not None]
+            tried += len(made)
+            if not scored:
+                continue
+            sc, body = min(scored)
+            stale += 1
+            if sc <= cur_score:
+                cur, cur_score = (cur[0], body, cur[2]), sc
+            if sc < best_score:
+                best, best_score, stale = cur, sc, 0
+                print(f"  {tried:5d} tries: score {sc}", flush=True)
+                keep_best(best)
+            if stale >= 20:
+                cur, cur_score, stale = best, best_score, 0
+    return best, best_score, tried
+
+
 def compare_rows():
     import csv
     return list(csv.DictReader(open("config/symbols.csv")))
@@ -1039,16 +1163,25 @@ def main():
                     help="look for a shift of the symbol IDs, then a declaration move that makes it")
     ap.add_argument("--plan", action="store_true",
                     help="plan how many declarations to add before each function in the file")
+    ap.add_argument("--order", action="store_true",
+                    help="hill climb over the order of independent statements only")
     ap.add_argument("--file", action="store_true",
                     help="also reorder the file's top-level declarations, keeping its other functions matching")
     args = ap.parse_args()
     FILE_MODE[0] = args.file or args.pad
-    build.compile_all()
+    if LE:
+        import lefn
+        if args.pad or args.plan or args.sweep:
+            sys.exit("--pad, --plan and --sweep are pe only (VC5's symbol IDs, COFF line numbers)")
+        if not lefn.build():
+            return 1
+    else:
+        build.compile_all()
     src, text, start, end = find_function(args.name)
     if args.plan:
         plan(src, text, args.limit if args.limit != 3000 else 64, args.j)
         return 0
-    s = Scorer(args.name, src, text, start, end)
+    s = (lefn.Scorer if LE else Scorer)(args.name, src, text, start, end)
     base = s.variant(text[start:end])
     FILE_MODE[1] = (base[0], base[2])
     first = s.score(base)
@@ -1085,6 +1218,9 @@ def main():
     elif args.sweep and best_score:
         best, best_score, _ = sweep(s, best, best_score, args, lambda v: keep(args.name, v))
         tried = 0
+        deadline = 0
+    elif args.order and best_score:
+        best, best_score, tried = order_climb(s, best, best_score, args, lambda v: keep(args.name, v))
         deadline = 0
     elif args.decls and best_score:
         cands = [(best[0], b, best[2]) for b in declaration_orders(best[1], args.limit, rng)[1:]]
