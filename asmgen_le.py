@@ -264,7 +264,7 @@ class Module:
 
     def source(self):
         used = set()
-        self.lines = {}  # line number in the source: instruction address
+        self.lines = {}  # index in body, later line number in the source: instruction address
         body = []
         publics = [sym for a, sym in sorted(self.labels.items()) if not re.fullmatch(r"[LDB][0-9a-f]+", sym)]
         for kind, start, end in self.ranges:
@@ -277,8 +277,8 @@ class Module:
                     if is_code:
                         for at, raw, mnem, ops in self.ins[s]:
                             if at in self.labels and not (row and at == s):
-                                body.append(f"{self.labels[at]}:")
-                            self.lines[len(body) + 1] = at
+                                body.append(f"{self.labels[at]}::")
+                            self.lines[len(body)] = at
                             body.append(self.instruction(at, raw, mnem, ops, used))
                     else:
                         cuts = sorted({s, e} | {a for a in self.labels if s < a < e})
@@ -303,8 +303,11 @@ class Module:
             head.append("")
         head += [f"    public {s}" for s in publics]
         text = head + body + ["", "    end"]
-        offset = len(head)
-        self.lines = {n + offset: a for n, a in self.lines.items()}
+        line, first = len(head) + 1, []
+        for item in body:  # an item of raw bytes can be several lines
+            first.append(line)
+            line += item.count("\n") + 1
+        self.lines = {first[i]: a for i, a in self.lines.items()}
         return "\n".join(text) + "\n"
 
     def func_at(self, s):
