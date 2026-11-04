@@ -14,8 +14,9 @@ The code's functions are the rows of config/symbols.csv in the code
 range; each becomes a public `proc` under its symbol, which every row
 needs. The bytes between them (padding, Watcom's jump tables) are data,
 as are tables of code addresses inside a function that an indexed jump
-reads (`jmp [ebx*4+table]`). A row with a symbol in a data or BSS range
-becomes a public label there. Every other address the module's
+reads (`jmp [ebx*4+table]`). A row with a symbol in a data or BSS range,
+or one of size 0 in code (a table other modules index), becomes a public
+label there. Every other address the module's
 fixups or branches reach inside it gets a local label: Lxxxx in code,
 Dxxxx in data, Bxxxx in BSS. Addresses outside the module name their
 row's symbol, plus an offset into it, as an extern. Which values are
@@ -151,7 +152,7 @@ class Module:
         labels = {}
         for a, s, n, sym in self.rows:
             k = self.kind_of(a)
-            if k and sym and (k != "code" or s):
+            if k and sym:
                 labels.setdefault(a, sym)
         refs = set()
         for kind, start, end in self.ranges:
