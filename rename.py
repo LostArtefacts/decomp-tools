@@ -6,9 +6,9 @@
 OLD and NEW are bare identifiers (ScriptMoveAngle, not Enemy::ScriptMoveAngle);
 @FILE reads more pairs from FILE, one "OLD NEW" per line. A rename covers
 every whole-word occurrence in the tracked text files: code, symbols.csv
-names and mangled symbols, notes. In the working tree docs/progress.svg
-is left to `just progress`; --history redraws each commit's from its own
-record of what matched, so renamed functions count as named.
+names and mangled symbols, notes, the function names in
+docs/progress.svg. The image is not redrawn: a placeholder renamed
+keeps the colour of an unnamed function until `just progress`.
 
 Only functions src/*.c and src/*.cpp define are renamed. --history applies each
 rename from the commit that first defines the function, commit messages
@@ -77,18 +77,10 @@ def defined(files, name):
                for path, data in files.items())
 
 
-def render(tools, root, old_svg, output):
-    subprocess.run([sys.executable, os.path.join(tools, "render_progress.py"),
-                    "--from-svg", old_svg, "--root", root, output],
-                   check=True, stdout=subprocess.DEVNULL)
-
-
-def rename_tree(root, pairs, tools=TOOLS, strict=False, redraw=True):
+def rename_tree(root, pairs, strict=False):
     """Applies the renames of functions defined under `root`. Returns the
-    pairs applied. Without `redraw`, docs/progress.svg is left alone."""
+    pairs applied."""
     files = dict(text_files(root))
-    if not redraw:
-        files.pop(SVG, None)
     active = [(o, n) for o, n in pairs if defined(files, o)]
     if strict:
         for old, new in pairs:
@@ -96,28 +88,13 @@ def rename_tree(root, pairs, tools=TOOLS, strict=False, redraw=True):
                 sys.exit(f"{old} is not defined in src/")
             if any(word(new).search(d) for p, d in files.items() if p != SVG):
                 sys.exit(f"{new} is already in use")
-    if not active:
-        return active
-    svg = os.path.join(root, SVG)
-    redraw = redraw and os.path.exists(svg)
-    with tempfile.TemporaryDirectory() as tmp:
-        if redraw:
-            # The redrawing must reproduce the rendering it starts from, or
-            # the commit's renderer differed from this one.
-            check = os.path.join(tmp, "check.svg")
-            render(tools, root, svg, check)
-            if open(check, "rb").read() != files[SVG]:
-                sys.exit(f"{SVG} was drawn by another renderer; not redrawing it")
-            shutil.copy(svg, os.path.join(tmp, "old.svg"))
-        for path, data in files.items():
-            new_data = data
-            for old, new in active:
-                new_data = word(old).sub(new.encode(), new_data)
-            if new_data != data:
-                with open(os.path.join(root, path), "wb") as f:
-                    f.write(new_data)
-        if redraw:
-            render(tools, root, os.path.join(tmp, "old.svg"), svg)
+    for path, data in files.items():
+        new_data = data
+        for old, new in active:
+            new_data = word(old).sub(new.encode(), new_data)
+        if new_data != data:
+            with open(os.path.join(root, path), "wb") as f:
+                f.write(new_data)
     return active
 
 
@@ -176,9 +153,7 @@ def main():
     if args[0] == "--message":
         rename_message(parse_pairs(args[1:]))
         return 0
-    # The working tree's progress.svg may predate its last build: leave
-    # it to `just progress`.
-    for old, new in rename_tree(ROOT, parse_pairs(args), strict=True, redraw=False):
+    for old, new in rename_tree(ROOT, parse_pairs(args), strict=True):
         print(f"{old} -> {new}")
     return 0
 

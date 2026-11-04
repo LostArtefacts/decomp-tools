@@ -137,17 +137,16 @@ just tools-init hooks
 | `probe [-j N]` | compile the reference source tree and score each of its functions against the original |
 | `fn NAME [-d\|-g\|-a]`, `fn --next [N]` | one function: target file, the reference's definition and what `src/` lacks; its diff; Ghidra's version; what to do next |
 | `permute NAME [-j N] [-t S]`, `permute NAME --decls` | search source variants of a function for a byte match; `--decls` tries every order of its local declarations, which decides VC5's term and register order |
-| `progress` | render `docs/progress.svg` |
+| `progress` | build, then render `docs/progress.svg` |
 | `hooks` | use `tools/hooks/`: 50/72 commit messages without type prefixes or trailers (a `Decompile` subject may run over 50 for a long name), and the game's commit rules (see `[hooks]`) |
 | `clean` | remove build outputs (keeps the Ghidra project) |
 
 They dispatch on `game.format`. With `le`, `build` only compiles into
 `build/obj/`, `compare` also compares the data segments and accepts the
 functions `config/nonmatching.txt` lists as known not to match, `game`
-writes the original with `src/` hooked in to `game.hooked`, `run` runs
-it in DOSBox, and `progress` brings the build up to date first. `exe`,
-`compare-exe`, `dxsdk`, `manifest`, `probe`, `fn` and `permute` are
-`pe` only; these are `le` only:
+writes the original with `src/` hooked in to `game.hooked`, and `run`
+runs it in DOSBox. `exe`, `compare-exe`, `dxsdk`, `manifest`, `probe`,
+`fn` and `permute` are `pe` only; these are `le` only:
 
 | Recipe | Does |
 | --- | --- |

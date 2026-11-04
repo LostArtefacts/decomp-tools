@@ -3,8 +3,8 @@
 
     render_progress.py [OUTPUT]
 
-Functions come from
-config/symbols.csv, limited to the game code; their status from the build:
+Functions come from config/symbols.csv, limited to the game code;
+their status from the build:
 
 - named:       decompiled and matching, with a real name
 - decompiled:  decompiled and matching, still with a placeholder name
@@ -12,25 +12,19 @@ config/symbols.csv, limited to the game code; their status from the build:
 - nonmatching: defined in src/, not matching yet
 - todo:        everything else
 
-Run it after a build (`just progress` does both). It prints a bar of
+It reads the build and does not run one: `just progress` builds
+first. It prints a bar of
 the functions and one of the bytes, matched and not matching yet, and
 for a PE game two of the whole original exe: its code (the game's,
 the libraries' after game.game_end, and code no row covers) and its
 data rows, defined once an object in exe.obj_dir defines them; then the
 counts of each.
 
-    render_progress.py --from-svg OLD [--root DIR] [OUTPUT]
-
-renders without a build instead: whether each function was built and
-matched comes from OLD, an earlier rendering, and the names from DIR's
-config/symbols.csv. tools/rename.py uses it to redraw past commits.
-
-With game.format = "le", it brings the build up to date first, and
-also counts the data segments that match. A function without a size in
-symbols.csv takes the one in build/functions.csv, from `just analyze`.
-One with size 0 shares its code with another, as wcc386 does for
-identical functions; it counts as a function but takes no space in the
-treemap.
+With game.format = "le", it also counts the data segments that match.
+A function without a size in symbols.csv takes the one in
+build/functions.csv, from `just analyze`. One with size 0 shares its
+code with another, as wcc386 does for identical functions; it counts
+as a function but takes no space in the treemap.
 """
 import csv
 import fnmatch
@@ -38,7 +32,6 @@ import glob
 import html
 import os
 import re
-import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -57,7 +50,6 @@ LE = project.FORMAT == "le"
 ORDER_HEADER = "By function order"
 SIZE_HEADER = "By function size"
 HEADER = TITLE if LE else f"{TITLE} · {project.config['game']['exe']}"
-DATA_STATS: dict[str, tuple[int, int]] = {}
 
 
 class SymbolStatus(StrEnum):
@@ -79,8 +71,8 @@ class Symbol:
 
 
 def built_from_svg(path: str) -> dict[int, bool | None]:
-    """Whether each function an earlier rendering shows matched: True,
-    False when it did not, None when it was not built."""
+    """Whether each function a rendering shows matched: True, False
+    when it did not, None when it was not built."""
     with open(path) as f:
         svg = f.read()
     built: dict[int, bool | None] = {}
@@ -89,41 +81,35 @@ def built_from_svg(path: str) -> dict[int, bool | None]:
     return built
 
 
-def compare_built_le(root: str) -> dict[int, bool]:
+def compare_built_le() -> tuple[dict[int, bool], tuple[int, int]]:
     """Whether each compiled function matches, by address, from the LE
-    backend's objects; the data segments go to DATA_STATS."""
+    backend's objects; and how many data segments match, of how many."""
     import compare_le, omf
-    orig = compare_le.Original(os.path.join(root, compare_le.EXE))
-    with open(os.path.join(root, "config/symbols.csv")) as f:
+    orig = compare_le.Original(os.path.join(ROOT, compare_le.EXE))
+    with open(os.path.join(ROOT, "config/symbols.csv")) as f:
         by_symbol = {r["symbol"]: r for r in csv.DictReader(f) if r["symbol"]}
     built: dict[int, bool] = {}
-    data = [0, 0]
-    for path in sorted(glob.glob(os.path.join(root, "build/obj/*.obj"))):
+    same = segments = 0
+    for path in sorted(glob.glob(os.path.join(ROOT, "build/obj/*.obj"))):
         for mod in omf.modules(path):
             for r in compare_le.compare_module(mod, orig, by_symbol)[0]:
                 if getattr(r, "data", False):
-                    data[0] += r.ok()
-                    data[1] += 1
+                    same += r.ok()
+                    segments += 1
                 elif r.addr is not None and not r.warning:
                     built[r.addr] = built.get(r.addr, True) and r.ok()
-    DATA_STATS[root] = (data[0], data[1])
-    return built
+    return built, (same, segments)
 
 
-def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None = None) -> list[Symbol]:
-    with open(os.path.join(root, "config/symbols.csv")) as f:
+def collect_functions(built: dict[int, bool]) -> list[Symbol]:
+    """The game's functions, with whether `built` (by address) has them
+    matching."""
+    with open(os.path.join(ROOT, "config/symbols.csv")) as f:
         rows = [r for r in csv.DictReader(f) if int(r["address"], 16) < GAME_END
                 and not any(fnmatch.fnmatchcase(r["name"], g) for g in project.config["game"]["progress_exclude"])]
-    if built_svg is None and LE:
-        if os.path.abspath(root) == ROOT:
-            subprocess.run([sys.executable, os.path.join(ROOT, "tools/build.py")], check=True,
-                           stdout=subprocess.DEVNULL)
-        built_le = compare_built_le(root)
-    elif built_svg is None:
-        built = {name: same for name, same, *_ in compare.results(compare.read_symbols())}
     if LE:
         sizes = {}
-        found = os.path.join(root, project.FUNCTIONS)
+        found = os.path.join(ROOT, project.FUNCTIONS)
         if os.path.exists(found):
             with open(found) as f:
                 sizes = {int(r["address"], 16): r["size"] for r in csv.DictReader(f)}
@@ -131,13 +117,7 @@ def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None
             row["size"] = row["size"] or sizes.get(int(row["address"], 16), "")
     functions = []
     for row in rows:
-        if built_svg is None and LE:
-            same = built_le.get(int(row["address"], 16))
-        elif built_svg is None:
-            symbols = [s for s in row["symbol"].split() if s in built]
-            same = all(built[s] for s in symbols) if symbols else None
-        else:
-            same = built_svg.get(int(row["address"], 16))
+        same = built.get(int(row["address"], 16))
         if same is None:
             status = SymbolStatus.TODO
         elif not same:
@@ -162,6 +142,20 @@ def collect_functions(root: str = ROOT, built_svg: dict[int, bool | None] | None
             print(f"warning: no size for {f.signature}, left out", file=sys.stderr)
     # A function without a size has no area in the treemap.
     return sorted((f for f in functions if f.size), key=lambda f: f.offset)
+
+
+def compare_built_pe() -> dict[int, bool]:
+    """Whether each compiled function matches, by address: all of a
+    row's symbols that were built must match."""
+    built = {name: same for name, same, *_ in compare.results(compare.read_symbols())}
+    with open(os.path.join(ROOT, "config/symbols.csv")) as f:
+        rows = list(csv.DictReader(f))
+    result = {}
+    for row in rows:
+        symbols = [s for s in row["symbol"].split() if s in built]
+        if symbols:
+            result[int(row["address"], 16)] = all(built[s] for s in symbols)
+    return result
 
 
 DOCUMENT_MARGIN = Decimal(2)
@@ -876,7 +870,7 @@ class ExeStats(TypedDict):
     unmapped: int
 
 
-def exe_stats(root: str) -> ExeStats | None:
+def exe_stats() -> ExeStats | None:
     """The built exe against the original: identical bytes in .text,
     in the initialized .rdata and .data, and in the whole file; the
     library functions (after game.game_end) identical at their original
@@ -886,12 +880,12 @@ def exe_stats(root: str) -> ExeStats | None:
     if LE:
         return None
     import compare_exe
-    ours_path = os.path.join(root, compare_exe.OURS)
-    map_path = os.path.join(root, compare_exe.MAP)
+    ours_path = os.path.join(ROOT, compare_exe.OURS)
+    map_path = os.path.join(ROOT, compare_exe.MAP)
     if not (os.path.exists(ours_path) and os.path.exists(map_path)):
         return None
     ours = compare_exe.PE(ours_path)
-    orig = compare_exe.PE(os.path.join(root, compare_exe.ORIGINAL))
+    orig = compare_exe.PE(os.path.join(ROOT, compare_exe.ORIGINAL))
 
     def section(names: tuple[str, ...]) -> tuple[int, int]:
         n = t = 0
@@ -907,7 +901,7 @@ def exe_stats(root: str) -> ExeStats | None:
 
     lo, vsize, _, _ = orig.sections[".text"]
     hi = lo + vsize
-    with open(os.path.join(root, "config/symbols.csv")) as f:
+    with open(os.path.join(ROOT, "config/symbols.csv")) as f:
         rows = list(csv.DictReader(f))
     code_rows = [(int(r["address"], 16), int(r["size"] or 0)) for r in rows if lo <= int(r["address"], 16) < hi]
     library = [(a, s) for a, s in code_rows if a >= GAME_END]
@@ -995,18 +989,14 @@ def summary(rows: list[tuple], width: int) -> str:
 def main() -> None:
     import shutil
 
-    args = sys.argv[1:]
-    root, built_svg = ROOT, None
-    while args[:1] in (["--from-svg"], ["--root"]):
-        if args[0] == "--from-svg":
-            built_svg = built_from_svg(args[1])
-        else:
-            root = args[1]
-        args = args[2:]
-    output = args[0] if args else os.path.join(root, "docs/progress.svg")
+    output = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "docs/progress.svg")
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
-    functions = collect_functions(root, built_svg)
-    rows = summary_rows(functions, DATA_STATS.get(root), exe_stats(root))
+    if LE:
+        built, data = compare_built_le()
+    else:
+        built, data = compare_built_pe(), None
+    functions = collect_functions(built)
+    rows = summary_rows(functions, data, exe_stats())
     with open(output, "w") as handle:
         print(ProgressSVG(functions, rows).render(), file=handle)
     print(summary(rows, shutil.get_terminal_size((100, 24)).columns))
