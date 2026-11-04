@@ -229,6 +229,18 @@ def place_modules(orig):
                         break
                     if any(end % ALIGN[s.align] for s in same):
                         return True
+            # Nor may its own empty segments pad the start of the next
+            # data of their name (a data module of the library linked
+            # right after the one before it).
+            for seg in m[1].segments:
+                if not seg or seg.size or seg.is_code():
+                    continue
+                for o in ordered[n:]:
+                    at = [a for i, a in o[2].items() if o[1].segments[i].name == seg.name and o[1].segments[i].size]
+                    if at:
+                        if at[0] % ALIGN[seg.align]:
+                            return True
+                        break
             return False
         at = next((n for n in range(lo, hi + 1) if where(n) % align == 0 and not data_pads(n)),
                   next((n for n in range(lo, hi + 1) if where(n) % align == 0), lo))
