@@ -313,6 +313,13 @@ def find_pieces(le, mods):
             pieces.append(Piece(base, base, oi, seg, cls, None))
             pieces[-1].use32 = bool(o["flags"] & 0x2000)
             pieces[-1].dgroup = oi == le.esp_obj - 1
+        elif inside and inside[0][0] == base:
+            # So does a module's segment that is an object of its own: the
+            # empty head of its class keeps it in the original's place.
+            kind = "CODE" if o["flags"] & 4 else "DATA"
+            pieces.append(Piece(base, base, oi, f"OBJ{oi + 1}", f"OBJ{oi + 1}{kind}", None))
+            pieces[-1].use32 = bool(o["flags"] & 0x2000)
+            pieces[-1].dgroup = False
         for r in inside + [(end, end, None, None)]:
             if r[0] > at and r[2] is not None and not any(images[base][at - base:r[0] - base]):
                 # Zeros up to a segment that aligns to its start are its

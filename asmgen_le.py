@@ -4,7 +4,9 @@ original LE exe (a library module no source exists for) from its bytes.
     asmgen.py KIND=START-END... > src/MODULE.asm
 
 Each KIND=START-END is one segment of the module: `code` (_TEXT),
-`data` (_DATA), `const` (CONST), `const2` (CONST2) or `bss` (_BSS),
+`data` (_DATA), `const` (CONST), `const2` (CONST2), `bss` (_BSS), or
+`obj3`/`obj4` for a segment that is an object of its own (OBJn, of the
+class link_le gives that object of the original),
 with addresses in the flattened image (hex, 0x optional), the end
 exclusive. A segment aligns to the largest of 16, 4, 2 and 1 its start
 is a multiple of (data at most 4, as Watcom and MASM align it), so wlink places it where the original has it after the
@@ -41,6 +43,9 @@ SEGMENTS = {  # kind: (segment, class)
     "const": ("CONST", "DATA"),
     "const2": ("CONST2", "DATA"),
     "bss": ("_BSS", "BSS"),
+    # An object of its own (link_le's name and class for one).
+    "obj3": ("OBJ3", "OBJ3DATA"),
+    "obj4": ("OBJ4", "OBJ4DATA"),
 }
 ALIGNS = ((16, "para"), (4, "dword"), (2, "word"), (1, "byte"))
 PREFIX = {"code": "L", "bss": "B"}
@@ -128,12 +133,15 @@ class Module:
             for start, end, is_code, _ in spans:
                 if not is_code:
                     continue
-                lst = disasm(self.read(start, end), start)
-                ins[start] = lst
-                for at_, raw, mnem, ops in lst:
+                ins[start] = disasm(self.read(start, end), start)
+            within = {i for lst in ins.values() for a, raw, m, o in lst for i in range(a + 1, a + len(raw))}
+            for start, end, is_code, _ in spans:
+                if not is_code:
+                    continue
+                for at_, raw, mnem, ops in ins[start]:
                     for v in re.findall(r"\[[^\]]*[a-z]+[^\]]*0x([0-9a-f]+)\]", ops):
                         t = int(v, 16)
-                        if self.kind_of(t) == "code" and t in self.fix and not any(
+                        if self.kind_of(t) == "code" and t in self.fix and t not in within and not any(
                                 t == r[0] for r in self.funcs):
                             found.add(t)
             if found == tables:
@@ -163,15 +171,32 @@ class Module:
             for at, raw, mnem, ops in lst:
                 if BRANCH.match(mnem) and re.fullmatch(r"0x[0-9a-f]+", ops):
                     refs.add(int(ops, 16))
+        # A target inside an address the module holds (a jump table's
+        # base before its first entry) is an offset from that dword.
+        self.inside = {}
+        within = {}
+        for lst in self.ins.values():
+            for at, raw, mnem, ops in lst:
+                for i in range(at + 1, at + len(raw)):
+                    within[i] = at
+        for t in refs:
+            s = within.get(t)
+            if s is None:
+                s = next((s for s in range(t - 3, t) if s in self.fix and self.kind_of(s)), None)
+            if s is not None and t not in labels:
+                self.inside[t] = s
+                refs = refs | {s}
         for t in refs:
             k = self.kind_of(t)
-            if k and t not in labels:
+            if k and t not in labels and t not in self.inside:
                 labels[t] = f"{PREFIX.get(k, 'D')}{t:x}"
         return labels
 
     def symbol(self, v, used):
         if v in self.labels:
             return self.labels[v]
+        if v in self.inside:
+            return f"{self.labels[self.inside[v]]}+{v - self.inside[v]}"
         if self.kind_of(v):
             sys.exit(f"{v:#x}: no label")  # find_labels labels every target
         best = None
@@ -295,7 +320,7 @@ class Module:
         head = ["    .586p", ""]
         for kind, start, end in self.ranges:
             seg, cls = SEGMENTS[kind]
-            align = next(n for k, n in ALIGNS if start % k == 0 and (k <= 4 or kind == "code"))
+            align = next(n for k, n in ALIGNS if start % k == 0 and (k <= 4 or kind == "code" or kind.startswith("obj")))
             head += [f"{seg} segment {align} public use32 '{cls}'", f"{seg} ends"]
         head += ["", "    assume cs:FLAT, ds:FLAT, es:FLAT, ss:FLAT", ""]
         local = set(self.labels.values())

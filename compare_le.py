@@ -116,10 +116,12 @@ def jump_tables(seg, si, start, end):
         f = at.get(end - n - 4)
         if not f or f.size != 4 or f.rel or f.target != ("seg", si):
             return n
-        # An indexed jump right before its table: the displacement is
-        # the table's address, not an entry of it.
+        # An indexed jump or call right before its table: the
+        # displacement is the table's address, not an entry of it.
         inline, = struct.unpack_from("<i", seg.data, f.offset)
-        if f.disp + inline == f.offset + 4:
+        op = seg.data[max(f.offset - 3, 0):f.offset]
+        if op[:2] in (b"\xff\x24", b"\xff\x14") or (
+                f.disp + inline == f.offset + 4 and 0xFF in op[:2]):
             return n
         n += 4
 
@@ -169,7 +171,8 @@ def compare_module(mod, orig, by_symbol):
         # Escape's C aligns its functions to 16 with zeros, and MASM's
         # align fills with zeros and moves, which the rows leave out.
         zeros = len(ours) - lead - int(row["size"] or 0)
-        if row["size"] and 0 < zeros < 16 and is_padding(bytes(ours[-zeros:])):
+        if row["size"] and 0 < zeros < 16 and is_padding(bytes(ours[-zeros:])) and not any(
+                start + len(ours) - zeros - 3 <= f.offset < start + len(ours) for f in seg.fixups):
             del ours[-zeros:]
         tables = jump_tables(seg, si, start, start + len(ours))
         try:
