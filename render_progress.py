@@ -175,7 +175,7 @@ LEGEND_MARGIN = Decimal(15)
 TEXT_SIZE = Decimal(15)
 TEXT_MARGIN = Decimal(5)
 LEGEND_TEXT_SIZE = Decimal(12)
-SECTION_MARGIN = GRID_SQUARE_SIZE + LEGEND_MARGIN
+SECTION_MARGIN = Decimal(15)
 GRID_WIDTH = (
     GRID_MAX_SQUARES * (GRID_SQUARE_SIZE + GRID_SQUARE_MARGIN)
     - GRID_SQUARE_MARGIN
@@ -664,20 +664,22 @@ class SummarySection(Container):
     def __init__(self, rows: list[SummaryRow]) -> None:
         super().__init__()
         label = Decimal(130)
-        details_width = Decimal(350)
-        percent_width = Decimal(50)
+        details = [" · ".join([n for _, n in row.amounts] + row.notes) for row in rows]
+        details_width = Decimal(6) * max(len(d) for d in details)  # 12px text, about 6px a character
+        percents = [f"{100 * row.progress.matched:.1f}%" for row in rows]
+        percent_width = Decimal(10) * max(len(p) for p in percents)  # clear of the bar
         details_gap = TEXT_MARGIN * 3
         bar = GRID_WIDTH - label - percent_width - details_gap - details_width
         percent = label + bar + percent_width
         y = ZERO
-        for row in rows:
+        for row, text in zip(rows, percents):
             self.children.extend([
                 Text(x=ZERO, y=y, text=html.escape(row.title)),
                 TranslateShape([ProgressBarShape(row.progress, bar, GRID_SQUARE_SIZE, {
                     key: f"{n} · {format_decimal(row.progress.ratio(key) * 100)}%" for key, n in row.amounts
                 })],
                                x=label, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2),
-                Text(x=percent, y=y, text=f"{100 * row.progress.matched:.1f}%", anchor="end"),
+                Text(x=percent, y=y, text=text, anchor="end"),
                 Text(x=percent + details_gap, y=y + Decimal(1), size=Decimal(12),
                      class_name=SymbolStatus.TODO.value,
                      text=" · ".join([f'<tspan class="{key}">{html.escape(n)}</tspan>' for key, n in row.amounts]
@@ -711,7 +713,7 @@ class ProgressSVG(Container):
         if summary_rows:
             summary_wrap = TranslateShape([SummarySection(summary_rows)], y=top)
             self.children.append(summary_wrap)
-            top = summary_wrap.box.y2 + TEXT_MARGIN * 3
+            top = summary_wrap.box.y2 + SECTION_MARGIN
         section1_wrap = TranslateShape([section1], y=top)
         section2_wrap = TranslateShape(
             [section2], y=section1_wrap.box.y2 + SECTION_MARGIN
@@ -878,8 +880,8 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
             exe_row("Library code", "library", *exe["library"], [f"{exe['libraries']} functions"], []),
             exe_row("Executable code", "code", *exe["text"], unknown, unknown),
             exe_row("Executable data", "data", *exe["data"],
-                    [f"{exe['placed']}/{exe['globals']} globals in place"]
-                    + ([f"{exe['unmapped']} not in the map"] if exe["unmapped"] else []),
+                    [f"{exe['placed']}/{exe['globals']} globals placed"]
+                    + ([f"{exe['unmapped']} unmapped"] if exe["unmapped"] else []),
                     ([f"{displaced} globals out of place"] if displaced else [])
                     + ([f"{exe['unmapped']} globals not in the map"] if exe["unmapped"] else [])),
             exe_row("Executable file", "file", *exe["file"], [], []),
