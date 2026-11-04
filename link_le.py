@@ -208,13 +208,17 @@ def place_modules(orig):
         # Data nothing in the original refers to (a module whose code was
         # eliminated) follows the same segment of the C module of src/
         # before it: the game's objects are linked in the order of their
-        # names.
+        # names. A library module of src/ (its code past the game's) is
+        # linked elsewhere and does not count.
         if os.path.exists(os.path.join("src", os.path.basename(path).replace("_emptied", "")[:-4] + ".c")):
             for i, s in enumerate(mod.segments):
                 if s and s.size and i not in bases and s.name in ends:
                     bases[i] = -(-ends[s.name] // ALIGN[s.align]) * ALIGN[s.align]
+            library = any(mod.segments[i].is_code() and mod.segments[i].size and a >= project.GAME_END
+                          for i, a in bases.items())
             for i, a in bases.items():
-                ends[mod.segments[i].name] = a + mod.segments[i].size
+                if not library:
+                    ends[mod.segments[i].name] = a + mod.segments[i].size
         missing = [s.name for i, s in enumerate(mod.segments) if s and s.size and i not in bases]
         if missing:
             sys.exit(f"error: {path}: no place in the original for {', '.join(missing)}")
