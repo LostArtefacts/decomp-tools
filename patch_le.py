@@ -70,8 +70,8 @@ def patch(out):
             if not sym:
                 continue
             addr = int(sym["address"], 16)
-            if room.get(addr, 5) < 5:
-                continue
+            if room.get(addr, 5) < 5 or not project.CODE[0] <= addr < project.CODE[1]:
+                continue  # no room, or not in the code object (object 2's real-mode code)
             patch.remove_fixups(addr, addr + 5)
             patch.write(addr, b"\xe9\0\0\0\0")
             patch.add_fixup(addr + 1, 8, where[mod.segments.index(seg)] + start)
