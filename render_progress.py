@@ -20,7 +20,13 @@ the libraries' after game.game_end, and code no row covers) and its
 data rows, defined once an object in exe.obj_dir defines them; then the
 counts of each.
 
-With game.format = "le", it also counts the data segments that match.
+With game.format = "le", it also counts the data segments that match,
+and once the standalone exe is built it adds four rows of it: its code,
+initialized data and BSS, each split into the bytes built from source
+(our modules and the libraries, green), from asmgen.py's disassembly
+(yellow) and cut from the original as blobs by link_le.py (red); and
+its image bytes identical to the original's, split the same way, then
+the ones that differ.
 A function without a size in symbols.csv takes the one in
 build/functions.csv, from `just analyze`. One with size 0 shares its
 code with another, as wcc386 does for identical functions; it counts
@@ -649,6 +655,7 @@ class SummaryRow:
     label: str = ""  # the row's shorter title, for the terminal
     todo: str = "to do"  # the word for what is left, "differ" in the exe
     gaps: list[str] = field(default_factory=list)  # what is still off, for the terminal
+    words: dict[str, str] = field(default_factory=dict)  # the terminal's words for statuses, over WORDS
 
     @property
     def amounts(self) -> list[tuple[str, str]]:
@@ -854,8 +861,83 @@ def exe_stats() -> ExeStats | None:
     }
 
 
+class ExeStatsLE(TypedDict):
+    code: tuple[int, int, int]
+    data: tuple[int, int, int]
+    bss: tuple[int, int, int]
+    image: tuple[int, int, int, int]
+    pieces: int
+    fixups: tuple[int, int]
+
+
+def generated(path: str) -> bool:
+    """Whether the object at `path` is built from asmgen.py's output: a
+    src/ .asm that opens with `.586p` and has no `.model`, as asmgen
+    writes them and the game's own assembly never is."""
+    source = os.path.join(ROOT, "src", os.path.splitext(os.path.basename(path))[0] + ".asm")
+    if not os.path.exists(source):
+        return False
+    with open(source, errors="replace") as f:
+        text = f.read()
+    return text.lstrip().startswith(".586p") and ".model" not in text
+
+
+def exe_stats_le() -> ExeStatsLE | None:
+    """The standalone exe of an LE game: per kind of bytes (code, the
+    initialized data, the zero-initialized), how many come from source
+    (our modules and the libraries), how many from asmgen.py's
+    disassembly, and how many link_le.py still cuts from the original as
+    blobs; then the image bytes identical to the original's, split the
+    same way, and the identical fixups. None when the standalone exe is
+    not built."""
+    import compare_le
+    import le
+    import link_le
+    if not os.path.exists(os.path.join(ROOT, project.EXE)):
+        return None
+    orig = le.LE(project.ORIGINAL)
+    mods = link_le.place_modules(compare_le.Original(compare_le.EXE))
+    pieces, regions = link_le.find_pieces(orig, mods)
+    gen = [generated(path) for path, _, _ in mods]
+
+    def kind(cls: str) -> str:
+        if "CODE" in cls:
+            return "code"
+        return "bss" if cls in ("BSS", "STACK") else "data"
+
+    counts = {k: [0, 0, 0] for k in ("code", "data", "bss")}  # source, asmgen, blob
+    spans = []  # (start, end, 1 asmgen or 2 blob)
+    for a, e, n, si in regions:
+        counts[kind(mods[n][1].segments[si].cls)][1 if gen[n] else 0] += e - a
+        if gen[n]:
+            spans.append((a, e, 1))
+    for p in pieces:
+        counts[kind(p.cls)][2] += p.end - p.start
+        spans.append((p.start, p.end, 2))
+    ours = le.LE(os.path.join(ROOT, project.EXE))
+    (ia, fa), (ib, fb) = orig.image(), ours.image()
+    same = [0, 0, 0]
+    whole = 0
+    for (base, ma, _), (_, mb, _) in zip(ia, ib):
+        origin = bytearray(len(ma))
+        for a, e, c in spans:
+            lo, hi = max(a, base) - base, min(e, base + len(ma)) - base
+            if lo < hi:
+                origin[lo:hi] = bytes([c]) * (hi - lo)
+        for i, (x, y) in enumerate(zip(ma, mb)):
+            if x == y:
+                same[origin[i]] += 1
+        whole += max(len(ma), len(mb))
+    return {
+        "code": tuple(counts["code"]), "data": tuple(counts["data"]), "bss": tuple(counts["bss"]),
+        "image": (*same, whole - sum(same)),
+        "pieces": sum(1 for p in pieces if p.end > p.start),
+        "fixups": (len(set(fa) & set(fb)), max(len(fa), len(fb))),
+    }
+
+
 def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
-                 exe: ExeStats | None = None) -> list[SummaryRow]:
+                 exe: ExeStats | ExeStatsLE | None = None) -> list[SummaryRow]:
     """One row per measure. The exe rows count bytes identical to the
     original at the same position."""
 
@@ -873,7 +955,28 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
                    [f"{data[0]}/{data[1]} data segments"] if data else [], kb, label="Game code",
                    gaps=[f"{data[1] - data[0]} data segments differ"] if data and data[0] < data[1] else []),
     ]
-    if exe:
+    if exe and LE:
+        fixup_gaps = [] if exe["fixups"][0] == exe["fixups"][1] else [f"{exe['fixups'][1] - exe['fixups'][0]} fixups differ"]
+        cheats = {SymbolStatus.DECOMPILED: "disassembled by asmgen", SymbolStatus.NONMATCHING: "blobs"}
+
+        def origin_row(title: str, name: str, source: int, asm: int, blob: int) -> SummaryRow:
+            bar = ProgressBar({SymbolStatus.NAMED: source, SymbolStatus.DECOMPILED: asm,
+                               SymbolStatus.NONMATCHING: blob, SymbolStatus.TODO: 0})
+            return SummaryRow(title, bar, [], kb, f"Exe {name}", words={SymbolStatus.NAMED: "from source", **cheats})
+
+        source, asm, blob, differ = exe["image"]
+        image = ProgressBar({SymbolStatus.NAMED: source, SymbolStatus.DECOMPILED: asm,
+                             SymbolStatus.NONMATCHING: blob, SymbolStatus.TODO: differ})
+        rows += [
+            origin_row("Executable code", "code", *exe["code"]),
+            origin_row("Executable data", "data", *exe["data"]),
+            origin_row("Executable BSS", "BSS", *exe["bss"]),
+            SummaryRow("Executable image", image, [f"{exe['pieces']} blob pieces left"] + fixup_gaps, kb,
+                       "Exe image", "differ", fixup_gaps,
+                       words={SymbolStatus.NAMED: "identical", SymbolStatus.DECOMPILED: "identical by asmgen",
+                              SymbolStatus.NONMATCHING: "copied blobs"}),
+        ]
+    elif exe:
         unknown = [f"{kb(exe['unknown'])} not in symbols.csv"] if exe["unknown"] else []
         displaced = exe["globals"] - exe["placed"]
         rows += [
@@ -918,6 +1021,8 @@ def summary(rows: list[SummaryRow], width: int) -> str:
     it shows."""
 
     def words(r: SummaryRow, key: str, n: str) -> str:
+        if key in r.words:
+            return f"{n} {r.words[key]}"
         if key != SymbolStatus.TODO:
             return f"{n} {WORDS[key]}"
         if r.todo == "differ" and n.startswith("1 "):
@@ -948,7 +1053,7 @@ def main() -> None:
     else:
         built, data = compare_built_pe(), None
     functions = collect_functions(built)
-    rows = summary_rows(functions, data, exe_stats())
+    rows = summary_rows(functions, data, exe_stats_le() if LE else exe_stats())
     # Write beside the target and rename over it, so a viewer refreshing
     # mid-write never reads a half-written image.
     partial = f"{output}.{os.getpid()}.tmp"
