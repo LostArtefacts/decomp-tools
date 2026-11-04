@@ -34,6 +34,8 @@ build.hook names a Python file with the game's own steps. It may define:
     headers()             more headers whose changes rebuild everything
     exe_resources(feats)  the executable whose resources the exe gets,
                           instead of the original's
+    link_exe(objs, exe_objs, feats)  a project-specific standalone linker;
+                          it can call link_exe(..., customize=False)
 """
 import collections, csv, glob, importlib.util, json, os, struct, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
@@ -374,13 +376,18 @@ def link_order(objs, symbols, how):
     return sorted(objs, key=keys.get)
 
 
-def link_exe(objs, exe_objs=None, feats=()):
+def link_exe(objs: list[str], exe_objs: list[str] | None = None,
+             feats: tuple[str, ...] = (), *, customize: bool = True) -> None:
     """Links the standalone game with the libraries the original was built
     with (exe.libs, in the original's order: it decides the import table
     and where library code lands). `objs` give the link order; with /GL,
     `exe_objs` are the same files' /GL objects, which get linked."""
     import rsrc
     exe_objs = exe_objs or objs
+    custom = hook("link_exe") if customize else None
+    if custom:
+        custom(objs, exe_objs, list(feats))
+        return
     res = os.path.join(os.path.dirname(exe_objs[0]), f"{project.NAME}.res")
     resources = hook("exe_resources")
     image = (resources(list(feats)) if resources else None) or ORIGINAL
