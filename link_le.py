@@ -158,36 +158,53 @@ def place_modules(orig):
     le = LE(project.ORIGINAL)
     stack = le.objects[le.esp_obj - 1]["base"] + le.esp
     mods = []
-    for path in sorted(glob.glob("build/obj/*.obj")) + library_objects():
-        for mod in omf.modules(path):
-            _, bases = compare_le.compare_module(mod, orig, by_symbol)
-            bases = dict(bases)
-            for seg, name, start, _ in mod.functions():
-                si = mod.segments.index(seg)
-                if si not in bases and name in by_symbol:
-                    bases[si] = int(by_symbol[name]["address"], 16) - start
-            place_by_fixups(mod, bases, orig, by_symbol)
-            for si, seg in enumerate(mod.segments):
-                if seg and seg.size and seg.cls == "STACK" and si not in bases:
-                    bases[si] = stack - seg.size  # the end of the stack, as any order fills it
-                    stack -= seg.size
-            # Code of a library module the original lacks is a segment its
-            # link eliminated (wlink's option eliminate drops unreferenced
-            # code segments; the original's link only met one, heapen's
-            # _heapenable): the module is linked with it emptied, from a
-            # file of its own, as the extract is rewritten on every run.
-            gone = {i for i, s in enumerate(mod.segments)
-                    if s and s.size and i not in bases and s.is_code() and path.startswith(LIB)}
-            if gone:
-                with open(path, "rb") as f:
-                    raw = omf.empty_segments(f.read(), gone)
-                path = path[:-len(".obj")] + "_emptied.obj"
-                write_atomic(path, raw)
-                mod = omf.Module(raw)
-            missing = [s.name for i, s in enumerate(mod.segments) if s and s.size and i not in bases]
-            if missing:
-                sys.exit(f"error: {path}: no place in the original for {', '.join(missing)}")
-            mods.append((path, mod, bases))
+    paths = sorted(glob.glob("build/obj/*.obj")) + library_objects()
+    parsed = [(path, mod) for path in paths for mod in omf.modules(path)]
+    ends = {}  # segment name: where the last module of src/ ends it
+    used = {f.target[1] for _, mod in parsed for s in mod.segments[1:] for f in s.fixups if f.target[0] == "ext"}
+    for path, mod in parsed:
+        _, bases = compare_le.compare_module(mod, orig, by_symbol)
+        bases = dict(bases)
+        for seg, name, start, _ in mod.functions():
+            si = mod.segments.index(seg)
+            if si not in bases and name in by_symbol:
+                bases[si] = int(by_symbol[name]["address"], 16) - start
+        place_by_fixups(mod, bases, orig, by_symbol)
+        for si, seg in enumerate(mod.segments):
+            if seg and seg.size and seg.cls == "STACK" and si not in bases:
+                bases[si] = stack - seg.size  # the end of the stack, as any order fills it
+                stack -= seg.size
+        # Code the original lacks is a segment its link eliminated
+        # (wlink's option eliminate drops unreferenced code segments:
+        # heapen's _heapenable, the viewer's functions): the module is
+        # linked with it emptied, from a file of its own, as the
+        # library extract is rewritten on every run. Code something
+        # calls was not eliminated; it is an error below.
+        gone = {i for i, s in enumerate(mod.segments)
+                if s and s.size and i not in bases and s.is_code()
+                and not any(name in used for _, name, _ in s.publics)}
+        if gone:
+            with open(path, "rb") as f:
+                raw = omf.empty_segments(f.read(), gone)
+            path = os.path.join(LINK if path.startswith("build/obj") else LIB,
+                                os.path.basename(path)[:-len(".obj")] + "_emptied.obj")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            write_atomic(path, raw)
+            mod = omf.Module(raw)
+        # Data nothing in the original refers to (a module whose code was
+        # eliminated) follows the same segment of the C module of src/
+        # before it: the game's objects are linked in the order of their
+        # names.
+        if os.path.exists(os.path.join("src", os.path.basename(path).replace("_emptied", "")[:-4] + ".c")):
+            for i, s in enumerate(mod.segments):
+                if s and s.size and i not in bases and s.name in ends:
+                    bases[i] = -(-ends[s.name] // ALIGN[s.align]) * ALIGN[s.align]
+            for i, a in bases.items():
+                ends[mod.segments[i].name] = a + mod.segments[i].size
+        missing = [s.name for i, s in enumerate(mod.segments) if s and s.size and i not in bases]
+        if missing:
+            sys.exit(f"error: {path}: no place in the original for {', '.join(missing)}")
+        mods.append((path, mod, bases))
     # The code gives the order; a module without code goes among the ones
     # whose segments of the same name surround its first segment.
     # (The startup's BEGTEXT leads the code, but its _TEXT, the bulk of

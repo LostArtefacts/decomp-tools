@@ -33,7 +33,9 @@ def patch(out):
             _, bases = compare.compare_module(mod, orig, by_symbol)
             where = {}
             for i, seg in enumerate(mod.segments[1:], 1):
-                if seg.is_code() or i not in bases:
+                if seg.is_code() and seg.publics and not any(n in by_symbol for _, n, _ in seg.publics):
+                    where[i] = None  # code the original's link eliminated (link_le.py)
+                elif seg.is_code() or i not in bases:
                     blob += bytes(-len(blob) % 16)
                     where[i] = BASE + len(blob)
                     blob += seg.data
@@ -47,7 +49,7 @@ def patch(out):
     room = {a: b - a for a, b in zip(starts, starts[1:])}
     for mod, where in placed:
         for i, seg in enumerate(mod.segments[1:], 1):
-            if not where[i] >= BASE:
+            if where[i] is None or not where[i] >= BASE:
                 continue
             for f in seg.fixups:
                 at = where[i] + f.offset

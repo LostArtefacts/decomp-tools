@@ -83,6 +83,7 @@ class Result:
         self.data = False
         self.ours = None
         self.size = 0
+        self.gone = False  # code the original's link eliminated
 
     def ok(self):
         return not self.errors
@@ -158,7 +159,12 @@ def compare_module(mod, orig, by_symbol):
         row = by_symbol.get(name)
         if not row:
             r = Result(name, None)
-            r.errors.append("not in config/symbols.csv")
+            if not any(n in by_symbol for _, n, _ in seg.publics):
+                # No function of its segment is in the original: wlink
+                # eliminated it (link_le.py links it emptied).
+                r.gone = True
+            else:
+                r.errors.append("not in config/symbols.csv")
             results.append(r)
             continue
         addr = int(row["address"], 16)
@@ -356,7 +362,8 @@ def main():
     wanted = sys.argv[1:]
     known = load_nonmatching()
     warnings = [r for r in results if r.warning]
-    results = [r for r in results if not r.warning]
+    gone = [r for r in results if r.gone]
+    results = [r for r in results if not r.warning and not r.gone]
     failed = []
     for r in results:
         expected = r.name in known
@@ -382,6 +389,8 @@ def main():
     if not wanted:
         for r in warnings:
             print(f"warning  {r.addr:#010x} {r.name}: {r.warning}")
+        for r in gone:
+            print(f"gone     {r.name}: no function of its segment is in the original (eliminated)")
         funcs = [r for r in results if not r.data]
         data = [r for r in results if r.data]
         good = [r for r in funcs if r.ok() and r.addr]
