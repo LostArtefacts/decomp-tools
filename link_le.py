@@ -301,6 +301,15 @@ def find_pieces(le, mods):
     for (a0, e0, n0, _), (a1, _, n1, _) in zip(regions, regions[1:]):
         if a1 < e0:
             print(f"warning: {mods[n0][0]} and {mods[n1][0]} overlap at {a1:#x}")
+    # wlink combines the segments of a name and class into one, aligned as
+    # the most aligned of them, empty ones included.
+    combined, first = {}, {}
+    for _, mod, _ in mods:
+        for s in mod.segments[1:]:
+            combined[s.name, s.cls] = max(combined.get((s.name, s.cls), 1), ALIGN[s.align])
+    for a, _, n, si in regions:
+        s = mods[n][1].segments[si]
+        first.setdefault((s.name, s.cls), a)
     pieces = []
     images = {base: data for base, data, _ in le.image()[0]}
     for oi, o in enumerate(le.objects):
@@ -325,7 +334,8 @@ def find_pieces(le, mods):
             if r[0] > at and r[2] is not None and not any(images[base][at - base:r[0] - base]):
                 # Zeros up to a segment that aligns to its start are its
                 # padding, wlink's to make.
-                align = ALIGN[mods[r[2]][1].segments[r[3]].align]
+                s = mods[r[2]][1].segments[r[3]]
+                align = combined[s.name, s.cls] if first[s.name, s.cls] == r[0] else ALIGN[s.align]
                 if r[0] % align == 0 and r[0] - at < align:
                     at = r[0]
             if r[0] > at:
