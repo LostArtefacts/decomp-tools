@@ -80,10 +80,19 @@ def library_objects():
         if name not in libs[lib]:
             sys.exit(f"error: {link['libs'][lib]} has no module {name}")
         path = os.path.join(LIB, f"{lib}_{name}.obj".lower())
-        with open(path, "wb") as f:
-            f.write(libs[lib][name])
+        write_atomic(path, libs[lib][name])
         paths.append(path)
     return paths
+
+
+def write_atomic(path, data):
+    """Writes `path` through a temporary file, so that a link or a
+    progress render running at the same time reads either the old file
+    or the new one, never a half-written one."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
 
 
 class Omf:
@@ -164,14 +173,15 @@ def place_modules(orig):
             # Code of a library module the original lacks is a segment its
             # link eliminated (wlink's option eliminate drops unreferenced
             # code segments; the original's link only met one, heapen's
-            # _heapenable): the module is linked with it emptied.
+            # _heapenable): the module is linked with it emptied, from a
+            # file of its own, as the extract is rewritten on every run.
             gone = {i for i, s in enumerate(mod.segments)
                     if s and s.size and i not in bases and s.is_code() and path.startswith(LIB)}
             if gone:
                 with open(path, "rb") as f:
                     raw = omf.empty_segments(f.read(), gone)
-                with open(path, "wb") as f:
-                    f.write(raw)
+                path = path[:-len(".obj")] + "_emptied.obj"
+                write_atomic(path, raw)
                 mod = omf.Module(raw)
             missing = [s.name for i, s in enumerate(mod.segments) if s and s.size and i not in bases]
             if missing:
