@@ -34,7 +34,7 @@ import os
 import re
 import sys
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum, auto
 from typing import Any, TypedDict
@@ -646,6 +646,9 @@ class SummaryRow:
     progress: ProgressBar
     notes: list[str]
     unit: Callable[[float | int], str] = str  # writes an amount
+    label: str = ""  # the row's shorter title, for the terminal
+    todo: str = "to do"  # the word for what is left, "differ" in the exe
+    gaps: list[str] = field(default_factory=list)  # what is still off, for the terminal
 
     @property
     def amounts(self) -> list[tuple[str, str]]:
@@ -857,24 +860,29 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
     def kb(n: float | int) -> str:
         return f"{n / 1000:.0f} KB" if n >= 500 else f"{n} bytes"
 
-    def exe_row(title: str, same: int, whole: int, notes: list[str]) -> SummaryRow:
+    def exe_row(title: str, name: str, same: int, whole: int, notes: list[str],
+                gaps: list[str]) -> SummaryRow:
         bar = ProgressBar({SymbolStatus.NAMED: same, SymbolStatus.TODO: whole - same})
-        return SummaryRow(title, bar, notes, kb)
+        return SummaryRow(title, bar, notes, kb, f"Exe {name}", "differ", gaps)
 
     rows = [
-        SummaryRow("Game functions", by_status(functions, SumMode.COUNT), []),
+        SummaryRow("Game functions", by_status(functions, SumMode.COUNT), [], label="Game functions"),
         SummaryRow("Game code", by_status(functions, SumMode.BYTES),
-                   [f"{data[0]}/{data[1]} data segments"] if data else [], kb),
+                   [f"{data[0]}/{data[1]} data segments"] if data else [], kb, label="Game code",
+                   gaps=[f"{data[1] - data[0]} data segments differ"] if data and data[0] < data[1] else []),
     ]
     if exe:
+        unknown = [f"{kb(exe['unknown'])} not in symbols.csv"] if exe["unknown"] else []
+        displaced = exe["globals"] - exe["placed"]
         rows += [
-            exe_row("Library code", *exe["library"], [f"{exe['libraries']} functions"]),
-            exe_row("Executable code", *exe["text"],
-                    [f"{kb(exe['unknown'])} not in symbols.csv"] if exe["unknown"] else []),
-            exe_row("Executable data", *exe["data"],
+            exe_row("Library code", "library", *exe["library"], [f"{exe['libraries']} functions"], []),
+            exe_row("Executable code", "code", *exe["text"], unknown, unknown),
+            exe_row("Executable data", "data", *exe["data"],
                     [f"{exe['placed']}/{exe['globals']} globals in place"]
-                    + ([f"{exe['unmapped']} not in the map"] if exe["unmapped"] else [])),
-            exe_row("Executable file", *exe["file"], []),
+                    + ([f"{exe['unmapped']} not in the map"] if exe["unmapped"] else []),
+                    ([f"{displaced} globals out of place"] if displaced else [])
+                    + ([f"{exe['unmapped']} globals not in the map"] if exe["unmapped"] else [])),
+            exe_row("Executable file", "file", *exe["file"], [], []),
         ]
     return rows
 
@@ -882,6 +890,8 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
 # Each status its own block, so the bar reads in plain text.
 BLOCKS = {SymbolStatus.NAMED: "\u2588", SymbolStatus.DECOMPILED: "\u2593",
           SymbolStatus.NONMATCHING: "\u2592", SymbolStatus.TODO: "\u2591"}
+WORDS = {SymbolStatus.NAMED: "done", SymbolStatus.DECOMPILED: "unnamed",
+         SymbolStatus.NONMATCHING: "not matching"}
 
 
 def cells(progress: ProgressBar, bar: int) -> dict[str, int]:
@@ -900,23 +910,29 @@ def cells(progress: ProgressBar, bar: int) -> dict[str, int]:
 
 
 def summary(rows: list[SummaryRow], width: int) -> str:
-    """The image's header, then the rows as a bar, the percentage, the
-    amounts and the notes, each status in its own block, then a legend
-    of the blocks. Plain text, so it pastes as it shows."""
+    """The image's header, then the rows: the label, a bar with each
+    status in its own block, the percentage, and the amount per status
+    in words, then what else is still off. Plain text, so it pastes as
+    it shows."""
+
+    def words(r: SummaryRow, key: str, n: str) -> str:
+        if key != SymbolStatus.TODO:
+            return f"{n} {WORDS[key]}"
+        if r.todo == "differ" and n.startswith("1 "):
+            return f"{n} differs"
+        return f"{n} {r.todo}"
 
     def details(r: SummaryRow) -> str:
-        return "  ".join([f"{BLOCKS[key]} {n}" for key, n in r.amounts] + r.notes)
+        return ", ".join([words(r, key, n) for key, n in r.amounts] + r.gaps)
 
-    title_width = max(len(r.title) for r in rows)
-    text = title_width + 2 + 8 + 2 + max(len(details(r)) for r in rows)
+    label_width = max(len(r.label) for r in rows)
+    text = label_width + 1 + 8 + 2 + max(len(details(r)) for r in rows)
     bar = max(min(40, width - 1 - text), 20)  # as wide as the terminal allows
 
     lines = [HEADER, ""]
     for r in rows:
         drawn = "".join(BLOCKS[key] * n for key, n in cells(r.progress, bar).items())
-        lines.append(f"{r.title:<{title_width}}  {drawn}  {100 * r.progress.matched:5.1f}%  {details(r)}")
-    lines.append("")
-    lines.append("  ".join(f"{BLOCKS[status]} {CAPTIONS[status]}" for status in SymbolStatus))
+        lines.append(f"{r.label:<{label_width}} {drawn}  {100 * r.progress.matched:5.1f}%  {details(r)}")
     return "\n".join(lines)
 
 
