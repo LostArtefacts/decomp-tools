@@ -145,8 +145,14 @@ They dispatch on `game.format`. With `le`, `build` only compiles into
 `build/obj/`, `compare` also compares the data segments and accepts the
 functions `config/nonmatching.txt` lists as known not to match, `game`
 writes the original with `src/` hooked in to `game.hooked`, and `run`
-runs it in DOSBox. `exe`, `compare-exe`, `dxsdk`, `manifest`, `probe`,
-`fn` and `permute` are `pe` only; these are `le` only:
+runs it in DOSBox. `fn` (through `lefn.py`) gives the function's status
+and module (`src/X.c`, or the stand-in `src/X.asm` with its
+neighbours); `-d` builds and shows a unified diff of normalized lines
+(offset, instruction) with registers, `[esp+N]`/`[ebp-N]` offsets and
+jump targets masked, then one unmasked, `-a` uncapped; `-g` is Ghidra's;
+`--next N` lists the functions of `progress.compiled` modules still in
+assembly. `compare-exe`, `dxsdk`, `manifest` and `probe` are `pe` only;
+these are `le` only:
 
 | Recipe | Does |
 | --- | --- |
@@ -202,6 +208,7 @@ puts it on `main` at the same commit.
 | `fn.py` | everything about one function in one call, and the order to do them in |
 | `permute.py` | searches rewrites of one function (declaration order, operand order, statement order, if/else) for a byte match, compiling each variant alone |
 | `farm.py` | runs permute.py over every hooks.allow_diff function, several at once, unattended; keeps matching bodies in build/farm, and `--apply` writes them into src/ |
+| `lefn.py` | the LE side of `fn.py` and `permute.py`: one function placed through its module as `compare_le.py` does, masked and unmasked diffs, and the scorer that compiles one variant with `wcc386` |
 | `rpermute.py` | runs permute.py on project.toml's [remote] machine, such as a faster Windows box, and copies its result back |
 | `asmgen.py` | writes MASM source for functions no compiler wrote (hand-written patches) from the exe's bytes, with symbols for calls, data and imports, checked byte for byte |
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
@@ -283,9 +290,10 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 With `watcom`, `cflags` (or the file's `file_cflags`) and `asflags` go
 to `wcc386` and `ML` unchanged, and an object is rebuilt when its source
 or any `.h` or `.inc` in `src/` is newer, or its flags changed. `bss`,
-`fn -d` and `permute` compile and preprocess with the same flags. The search lists are tried in order, the
-newest match of each first. `encoding`, `crlf`, `bin`, `include`,
-`lib`, `ml`, `timeout`, `hook` and `[dll]` and `[exe]` are `msvc` only.
+`fn -d` and `permute` compile and preprocess with the same flags. The
+search lists are tried in order, the newest match of each first.
+`encoding`, `crlf`, `bin`, `include`, `lib`, `ml`, `timeout`, `hook` and
+`[dll]` and `[exe]` are `msvc` only.
 
 ### `[dll]`
 

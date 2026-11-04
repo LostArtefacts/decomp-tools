@@ -77,7 +77,7 @@ probe *args: _pe _orig
     python3 tools/probe.py {{ args }}
 
 # One function: where it goes, the reference's definition, -d its diff, -g Ghidra's; --next N what to do next
-fn *args: _pe _orig
+fn *args: _orig
     python3 tools/fn.py {{ args }}
 
 # Search source variants of NAME for a byte match (-j JOBS -t SECONDS)

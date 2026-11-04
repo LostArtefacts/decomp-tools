@@ -21,6 +21,9 @@ target. reference.layout maps the reference's top directories to src/'s
 to say which file a function goes in; reference.skip leaves stale
 copies out. Functions already matching are the ones HEAD's
 docs/progress.svg shows.
+
+With game.format = "le", lefn.py answers instead: status and module,
+-d a masked then unmasked diff, -g Ghidra's, --next; see its docstring.
 """
 import csv, difflib, glob, os, re, subprocess, sys, tempfile
 
@@ -301,6 +304,9 @@ def main():
     args = sys.argv[1:]
     if not args:
         sys.exit(__doc__)
+    if project.config["game"]["format"] == "le":
+        import lefn
+        return lefn.main(args)
     if args[0] == "--next":
         show_next(int(args[1]) if len(args) > 1 else 10)
         return 0
