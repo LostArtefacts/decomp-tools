@@ -949,8 +949,17 @@ def main() -> None:
         built, data = compare_built_pe(), None
     functions = collect_functions(built)
     rows = summary_rows(functions, data, exe_stats())
-    with open(output, "w") as handle:
-        print(ProgressSVG(functions, rows).render(), file=handle)
+    # Write beside the target and rename over it, so a viewer refreshing
+    # mid-write never reads a half-written image.
+    partial = f"{output}.{os.getpid()}.tmp"
+    try:
+        with open(partial, "w") as handle:
+            print(ProgressSVG(functions, rows).render(), file=handle)
+        os.replace(partial, output)
+    except BaseException:
+        if os.path.exists(partial):
+            os.remove(partial)
+        raise
     print(summary(rows, shutil.get_terminal_size((100, 24)).columns))
 
 
