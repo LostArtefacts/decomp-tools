@@ -603,7 +603,8 @@ class FunctionTreeGrid(Container):
 
 
 class ProgressBarShape(Container):
-    def __init__(self, progress: ProgressBar, width: Decimal, height: Decimal) -> None:
+    def __init__(self, progress: ProgressBar, width: Decimal, height: Decimal,
+                 titles: dict[str, str] | None = None) -> None:
         super().__init__()
         x2 = ZERO
         for key, amount in progress.sections.items():
@@ -611,7 +612,8 @@ class ProgressBarShape(Container):
                 continue
             x1 = x2
             x2 += progress.ratio(key) * width
-            self.children.append(Rectangle(x=x1, y=ZERO, dx=x2 - x1, dy=height, class_name=key))
+            self.children.append(Rectangle(x=x1, y=ZERO, dx=x2 - x1, dy=height, class_name=key,
+                                           title=(titles or {}).get(key)))
         self.__post_init__()
 
 
@@ -668,7 +670,9 @@ class SummarySection(Container):
         for row in rows:
             self.children.extend([
                 Text(x=ZERO, y=y, text=html.escape(row.title)),
-                TranslateShape([ProgressBarShape(row.progress, bar, GRID_SQUARE_SIZE)],
+                TranslateShape([ProgressBarShape(row.progress, bar, GRID_SQUARE_SIZE, {
+                    key: f"{n} · {format_decimal(row.progress.ratio(key) * 100)}%" for key, n in row.amounts
+                })],
                                x=label, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2),
                 Text(x=percent, y=y, text=f"{100 * row.progress.matched:.1f}%", anchor="end"),
                 Text(x=percent + details_gap, y=y + Decimal(1), size=Decimal(12),
