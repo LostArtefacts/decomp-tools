@@ -37,7 +37,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum, auto
-from itertools import groupby
 from typing import Any, TypedDict
 
 import compare
@@ -184,24 +183,33 @@ class SumMode(StrEnum):
     COUNT = auto()
 
 
-@dataclass
-class MyFraction:
-    """Fraction that doesn't normalize (eg 8/12 doesn't become 2/3)"""
-
-    numerator: int
-    denominator: int
-
-
 def format_decimal(source: Decimal) -> str:
     return str(source.quantize(Decimal("1.11"))).replace(".00", "")
 
 
-def format_percent(source: MyFraction) -> str:
-    return format_decimal(fraction_to_decimal(source) * 100) + "%"
+@dataclass
+class ProgressBar:
+    """Amounts of one measure by status, in the order they are drawn."""
+
+    sections: dict[str, float | int]
+
+    @property
+    def total(self) -> float | int:
+        return sum(self.sections.values())
+
+    def ratio(self, *keys: str) -> Decimal:
+        return Decimal(sum(self.sections.get(k, 0) for k in keys)) / Decimal(self.total or 1)
+
+    @property
+    def matched(self) -> Decimal:
+        return self.ratio(SymbolStatus.NAMED, SymbolStatus.DECOMPILED)
 
 
-def fraction_to_decimal(source: MyFraction) -> Decimal:
-    return Decimal(source.numerator) / Decimal(source.denominator)
+def by_status(functions: list[Symbol], mode: "SumMode") -> ProgressBar:
+    return ProgressBar({
+        status: sum(f.size if mode == SumMode.BYTES else 1 for f in functions if f.status == status)
+        for status in SymbolStatus
+    })
 
 
 @dataclass
@@ -576,86 +584,17 @@ class FunctionTreeGrid(Container):
         self.__post_init__()
 
 
-def get_function_done_percentage(
-    chosen_functions: list[Symbol],
-    all_functions: list[Symbol],
-    mode: SumMode,
-) -> MyFraction:
-    match mode:
-        case SumMode.COUNT:
-            return MyFraction(len(chosen_functions), len(all_functions))
-        case SumMode.BYTES:
-            return MyFraction(
-                sum(function.size for function in chosen_functions),
-                sum(function.size for function in all_functions),
-            )
-        case _:
-            assert False
-
-
-class ProgressBar(Container):
-    def __init__(self, all_functions: list[Symbol], mode: SumMode) -> None:
+class ProgressBarShape(Container):
+    def __init__(self, progress: ProgressBar, width: Decimal, height: Decimal) -> None:
         super().__init__()
-        lx2 = ZERO
-
-        def sorter(function):
-            return list(SymbolStatus).index(function.status)
-
-        for status_value, group in groupby(
-            sorted(all_functions, key=sorter), sorter
-        ):
-            chosen_functions = list(group)
-            if not chosen_functions:
+        x2 = ZERO
+        for key, amount in progress.sections.items():
+            if not amount:
                 continue
-
-            status = chosen_functions[0].status
-            fraction = get_function_done_percentage(
-                chosen_functions, all_functions, mode=mode
-            )
-            ratio = fraction_to_decimal(fraction)
-            lx1 = lx2
-            lx2 += ratio * GRID_WIDTH
-            self.children.append(
-                Rectangle(
-                    x=lx1,
-                    y=ZERO,
-                    dx=lx2 - lx1,
-                    dy=PROGRESS_BAR_SIZE,
-                    class_name=status,
-                )
-            )
-
+            x1 = x2
+            x2 += progress.ratio(key) * width
+            self.children.append(Rectangle(x=x1, y=ZERO, dx=x2 - x1, dy=height, class_name=key))
         self.__post_init__()
-
-
-def get_functions_status_map(
-    all_functions: list[Symbol],
-) -> dict[SymbolStatus, list[Symbol]]:
-    functions_status_map: dict[SymbolStatus, list[Symbol]] = {
-        status: [] for status in SymbolStatus
-    }
-    for function in all_functions:
-        functions_status_map[function.status].append(function)
-    return functions_status_map
-
-
-def get_progress_parts(
-    all_functions: list[Symbol],
-) -> dict[SymbolStatus, tuple[list[Symbol], dict[SumMode, MyFraction]]]:
-    functions_status_map = get_functions_status_map(all_functions)
-
-    return {
-        status: (
-            functions_status_map[status],
-            {
-                mode: get_function_done_percentage(
-                    functions_status_map[status], all_functions, mode=mode
-                )
-                for mode in SumMode
-            },
-        )
-        for status in SymbolStatus
-    }
 
 
 class GridSection(Container):
@@ -668,8 +607,9 @@ class GridSection(Container):
         y = header_shape.size + TEXT_MARGIN
         x2 = GRID_WIDTH
 
+        progress = by_status(all_functions, mode)
         progress_bar = TranslateShape(
-            [ProgressBar(all_functions, mode=mode)], y=y
+            [ProgressBarShape(progress, GRID_WIDTH, PROGRESS_BAR_SIZE)], y=y
         )
 
         y = progress_bar.box.y2 + TEXT_MARGIN
@@ -678,8 +618,6 @@ class GridSection(Container):
             grid = TranslateShape([FunctionGrid(all_functions)], y=y)
         else:
             grid = TranslateShape([FunctionTreeGrid(all_functions)], y=y)
-
-        progress_parts = get_progress_parts(all_functions)
 
         progress_text = Text(
             x=GRID_WIDTH,
@@ -690,9 +628,9 @@ class GridSection(Container):
             text=(
                 " · ".join(
                     f'<tspan class="{status.value}">'
-                    + f"{format_percent(progress_parts[status][1][mode])}"
+                    + f"{format_decimal(progress.ratio(status) * 100)}%"
                     + (
-                        f" ({progress_parts[status][1][mode].numerator})"
+                        f" ({progress.sections[status]})"
                         if mode == SumMode.COUNT
                         else ""
                     )
@@ -714,23 +652,19 @@ class GridSection(Container):
         self.__post_init__()
 
 
-SUMMARY_TITLES = {
-    "game funcs": "Game functions",
-    "game code": "Game code",
-    "lib code": "Library code",
-    "exe code": "Executable code",
-    "exe data": "Executable data",
-    "exe file": "Executable file",
-}
+@dataclass
+class SummaryRow:
+    title: str
+    progress: ProgressBar
+    notes: list[str]
 
 
 class SummarySection(Container):
     """The terminal summary's rows as a table: the title, a bar in the
-    grid's colors, the percentage and the counts behind it."""
+    grid's colors, the percentage and the notes."""
 
-    def __init__(self, rows: list[tuple]) -> None:
+    def __init__(self, rows: list[SummaryRow]) -> None:
         super().__init__()
-        name = project.config["game"]["exe"]
         label = Decimal(130)
         details_width = Decimal(350)
         percent_width = Decimal(50)
@@ -738,30 +672,21 @@ class SummarySection(Container):
         bar = GRID_WIDTH - label - percent_width - details_gap - details_width
         percent = label + bar + percent_width
         y = ZERO
-        for title, matched, nonmatching, whole, ratio, unit, notes in rows:
-            whole = whole or 1
-            x = label
-            for n, status in [(matched, SymbolStatus.NAMED), (nonmatching, SymbolStatus.NONMATCHING),
-                              (whole - matched - nonmatching, SymbolStatus.TODO)]:
-                dx = bar * Decimal(max(n, 0)) / Decimal(whole)
-                if dx > 0:
-                    self.children.append(Rectangle(
-                        x=x, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2,
-                        dx=dx, dy=GRID_SQUARE_SIZE, class_name=status.value))
-                x += dx
-            details = " · ".join([ratio] + [n for n in notes.split("  ") if n and n != name])
+        for row in rows:
             self.children.extend([
-                Text(x=ZERO, y=y, text=html.escape(SUMMARY_TITLES.get(title, title))),
-                Text(x=percent, y=y, text=f'{100 * matched / whole:.1f}%', anchor="end"),
+                Text(x=ZERO, y=y, text=html.escape(row.title)),
+                TranslateShape([ProgressBarShape(row.progress, bar, GRID_SQUARE_SIZE)],
+                               x=label, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2),
+                Text(x=percent, y=y, text=f"{100 * row.progress.matched:.1f}%", anchor="end"),
                 Text(x=percent + details_gap, y=y + Decimal(1), size=Decimal(12),
-                     class_name=SymbolStatus.TODO.value, text=html.escape(details)),
+                     class_name=SymbolStatus.TODO.value, text=html.escape(" · ".join(row.notes))),
             ])
             y += TEXT_SIZE + Decimal(2)
         self.__post_init__()
 
 
 class ProgressSVG(Container):
-    def __init__(self, all_functions: list[Symbol], summary_rows: list[tuple] | None = None) -> None:
+    def __init__(self, all_functions: list[Symbol], summary_rows: list[SummaryRow] | None = None) -> None:
         super().__init__()
 
         section1 = GridSection(
@@ -926,63 +851,67 @@ def exe_stats() -> ExeStats | None:
 
 
 def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
-                 exe: ExeStats | None = None) -> list[tuple]:
-    """One row per measure: (title, matched, nonmatching, whole,
-    matched/whole as text, unit, notes). The exe rows count bytes
-    identical to the original at the same position."""
-    done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
-    red = [f for f in functions if f.status == SymbolStatus.NONMATCHING]
-    total = sum(f.size for f in functions) or 1
-    size = sum(f.size for f in done)
-    differ = sum(f.size for f in red)
-    count = len(functions) or 1
+                 exe: ExeStats | None = None) -> list[SummaryRow]:
+    """One row per measure. The exe rows count bytes identical to the
+    original at the same position."""
+    count = by_status(functions, SumMode.COUNT)
+    size = by_status(functions, SumMode.BYTES)
+    red = count.sections[SymbolStatus.NONMATCHING]
+    done = (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)
 
     def k(n: int) -> str:
         return f"{n / 1000:.0f}k"
 
-    name = TITLE if LE else project.config["game"]["exe"]
-    rows = [("game funcs", len(done), len(red), count, f"{len(done)}/{len(functions)}", "functions",
-             (f"+{len(red)} nonmatching  " if red else "") + name),
-            ("game code", size, differ, total, f"{k(size)}/{k(total)}", "bytes",
-             (f"+{k(differ)} nonmatching" if red else "") + (f"  {data[0]}/{data[1]} data" if data else ""))]
+    def exe_row(title: str, same: int, whole: int, notes: list[str]) -> SummaryRow:
+        bar = ProgressBar({SymbolStatus.NAMED: same, SymbolStatus.TODO: whole - same})
+        return SummaryRow(title, bar, [f"{k(same)}/{k(whole)}"] + notes)
+
+    rows = [
+        SummaryRow("Game functions", count,
+                   [f"{sum(count.sections[s] for s in done)}/{count.total}"]
+                   + ([f"+{red} nonmatching"] if red else [])),
+        SummaryRow("Game code", size,
+                   [f"{k(sum(size.sections[s] for s in done))}/{k(size.total)}"]
+                   + ([f"+{k(size.sections[SymbolStatus.NONMATCHING])} nonmatching"] if red else [])
+                   + ([f"{data[0]}/{data[1]} data"] if data else [])),
+    ]
     if exe:
-        n, t = exe["library"]
-        rows.append(("lib code", n, 0, t, f"{k(n)}/{k(t)}", "bytes", f"{exe['libraries']} functions"))
-        n, t = exe["text"]
-        rows.append(("exe code", n, 0, t, f"{k(n)}/{k(t)}", "bytes",
-                     f"{k(exe['unknown'])} not in symbols.csv" if exe["unknown"] else ""))
-        n, t = exe["data"]
-        rows.append(("exe data", n, 0, t, f"{k(n)}/{k(t)}", "bytes",
-                     f"{exe['placed']}/{exe['globals']} globals in place"
-                     + (f"  {exe['unmapped']} not in the map" if exe["unmapped"] else "")))
-        n, t = exe["file"]
-        rows.append(("exe file", n, 0, t, f"{k(n)}/{k(t)}", "bytes", f"{t - n} bytes differ" if t > n else ""))
+        same, whole = exe["file"]
+        rows += [
+            exe_row("Library code", *exe["library"], [f"{exe['libraries']} functions"]),
+            exe_row("Executable code", *exe["text"],
+                    [f"{k(exe['unknown'])} not in symbols.csv"] if exe["unknown"] else []),
+            exe_row("Executable data", *exe["data"],
+                    [f"{exe['placed']}/{exe['globals']} globals in place"]
+                    + ([f"{exe['unmapped']} not in the map"] if exe["unmapped"] else [])),
+            exe_row("Executable file", same, whole, [f"{whole - same} bytes differ"] if whole > same else []),
+        ]
     return rows
 
 
-def summary(rows: list[tuple], width: int) -> str:
-    """The rows as a bar, the percentage and the counts behind it.
+def summary(rows: list[SummaryRow], width: int) -> str:
+    """The rows as a bar, the percentage and the notes.
 
     Solid blocks match, shaded blocks are implemented but nonmatching,
     and light blocks remain.
     """
-    widths = [max(len(r[i]) for r in rows) for i in (0, 4)]
-    text = widths[0] + 2 + 8 + max(len(f"  {r[4]:>{widths[1]}} {r[5]}  {r[6]}".rstrip()) for r in rows)
+    title_width = max(len(r.title) for r in rows)
+    text = title_width + 2 + 8 + max(len("  " + "  ".join(r.notes)) for r in rows)
     bar = max(min(40, width - 1 - text), 10)  # as wide as the terminal allows
     dim, plain = ("\033[2m", "\033[0m") if sys.stdout.isatty() else ("", "")
 
-    def cells(n: int, whole: int) -> int:
-        c = min(round(bar * n / whole), bar)
-        return c - 1 if c == bar and n < whole else c  # keep a gap visible until it is all done
+    def cells(ratio: Decimal) -> int:
+        c = min(round(bar * ratio), bar)
+        return c - 1 if c == bar and ratio < 1 else c  # keep a gap visible until it is all done
 
     lines = []
-    for title, matched, nonmatching, whole, ratio, unit, notes in rows:
-        whole = whole or 1
-        full = cells(matched, whole)
-        part = cells(matched + nonmatching, whole) - full
-        lines.append(f"{title:<{widths[0]}}  " + "\u2588" * full + "\u2592" * part
-                     + "\u2591" * (bar - full - part) + f"  {100 * matched / whole:5.1f}%"
-                     + dim + f"  {ratio:>{widths[1]}} {unit}  {notes}".rstrip() + plain)
+    for r in rows:
+        matched = r.progress.matched
+        full = cells(matched)
+        part = cells(matched + r.progress.ratio(SymbolStatus.NONMATCHING)) - full
+        lines.append(f"{r.title:<{title_width}}  " + "\u2588" * full + "\u2592" * part
+                     + "\u2591" * (bar - full - part) + f"  {100 * matched:5.1f}%"
+                     + dim + ("  " + "  ".join(r.notes)).rstrip() + plain)
     return "\n".join(lines)
 
 
