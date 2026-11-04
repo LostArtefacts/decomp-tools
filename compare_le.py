@@ -149,6 +149,10 @@ def compare_module(mod, orig, by_symbol):
         si = segs.index(seg)
         layout.setdefault(si, []).append((start, end, addr))
         ours = bytearray(strip_padding(bytes(seg.data[start:end])))
+        # Escape's C aligns its functions to 16 with zeros, which the rows leave out.
+        zeros = len(ours) - lead - int(row["size"] or 0)
+        if row["size"] and 0 < zeros < 16 and not any(ours[-zeros:]):
+            del ours[-zeros:]
         tables = jump_tables(seg, si, start, start + len(ours))
         try:
             theirs = orig.read(addr, len(ours))
