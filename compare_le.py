@@ -88,6 +88,18 @@ class Result:
         return not self.errors
 
 
+def is_padding(b):
+    """Whether b is only zeros and the filler moves alignment writes."""
+    while b:
+        for pad in PADDING + (b"\x2e\x8b\xc0", b"\x00"):
+            if b.startswith(pad):
+                b = b[len(pad):]
+                break
+        else:
+            return False
+    return True
+
+
 def strip_padding(b):
     for pad in PADDING:
         if b.endswith(pad) and len(b) > len(pad):
@@ -103,6 +115,11 @@ def jump_tables(seg, si, start, end):
     while True:
         f = at.get(end - n - 4)
         if not f or f.size != 4 or f.rel or f.target != ("seg", si):
+            return n
+        # An indexed jump right before its table: the displacement is
+        # the table's address, not an entry of it.
+        inline, = struct.unpack_from("<i", seg.data, f.offset)
+        if f.disp + inline == f.offset + 4:
             return n
         n += 4
 
@@ -149,9 +166,10 @@ def compare_module(mod, orig, by_symbol):
         si = segs.index(seg)
         layout.setdefault(si, []).append((start, end, addr))
         ours = bytearray(strip_padding(bytes(seg.data[start:end])))
-        # Escape's C aligns its functions to 16 with zeros, which the rows leave out.
+        # Escape's C aligns its functions to 16 with zeros, and MASM's
+        # align fills with zeros and moves, which the rows leave out.
         zeros = len(ours) - lead - int(row["size"] or 0)
-        if row["size"] and 0 < zeros < 16 and not any(ours[-zeros:]):
+        if row["size"] and 0 < zeros < 16 and is_padding(bytes(ours[-zeros:])):
             del ours[-zeros:]
         tables = jump_tables(seg, si, start, start + len(ours))
         try:
