@@ -430,6 +430,7 @@ class Text(Shape):
     text: str
     class_name: str | None = None
     size: Decimal = TEXT_SIZE
+    anchor: str = "start"
 
     def __post_init__(self) -> None:
         self.style = ""
@@ -442,6 +443,7 @@ class Text(Shape):
             "<text "
             + (f'class="{self.class_name}" ' if self.class_name else "")
             + (f'style="{self.style}" ' if self.style else "")
+            + f'text-anchor="{self.anchor}" '
             + f'x="{format_decimal(self.x)}" '
             f'y="{format_decimal(self.y + self.size/2)}">'
             f"{self.text}"
@@ -690,9 +692,9 @@ class GridSection(Container):
             y=Decimal(3),
             size=Decimal(12),
             class_name=SymbolStatus.TODO.value,
+            anchor="end",
             text=(
-                '<tspan text-anchor="end">'
-                + " · ".join(
+                " · ".join(
                     f'<tspan class="{status.value}">'
                     + f"{format_percent(progress_parts[status][1][mode])}"
                     + (
@@ -703,7 +705,6 @@ class GridSection(Container):
                     + "</tspan>"
                     for status in SymbolStatus
                 )
-                + "</tspan>"
             ),
         )
 
@@ -737,8 +738,11 @@ class SummarySection(Container):
         super().__init__()
         name = project.config["game"]["exe"]
         label = Decimal(130)
-        bar = GRID_WIDTH - label - Decimal(260)
-        percent = label + bar + Decimal(60)
+        details_width = Decimal(350)
+        percent_width = Decimal(50)
+        details_gap = TEXT_MARGIN * 3
+        bar = GRID_WIDTH - label - percent_width - details_gap - details_width
+        percent = label + bar + percent_width
         y = ZERO
         for title, matched, nonmatching, whole, ratio, unit, notes in rows:
             whole = whole or 1
@@ -751,14 +755,14 @@ class SummarySection(Container):
                         x=x, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2,
                         dx=dx, dy=GRID_SQUARE_SIZE, class_name=status.value))
                 x += dx
-            details = " · ".join([f"{ratio} {unit}"] + [n for n in notes.split("  ") if n and n != name])
+            details = " · ".join([ratio] + [n for n in notes.split("  ") if n and n != name])
             self.children.extend([
                 Text(x=ZERO, y=y, text=html.escape(SUMMARY_TITLES.get(title, title))),
-                Text(x=percent, y=y, text=f'<tspan text-anchor="end">{100 * matched / whole:.1f}%</tspan>'),
-                Text(x=percent + TEXT_MARGIN * 3, y=y + Decimal(1), size=Decimal(12),
+                Text(x=percent, y=y, text=f'{100 * matched / whole:.1f}%', anchor="end"),
+                Text(x=percent + details_gap, y=y + Decimal(1), size=Decimal(12),
                      class_name=SymbolStatus.TODO.value, text=html.escape(details)),
             ])
-            y += TEXT_SIZE + TEXT_MARGIN
+            y += TEXT_SIZE + Decimal(2)
         self.__post_init__()
 
 
@@ -782,11 +786,11 @@ class ProgressSVG(Container):
 
         header = Text(x=ZERO, y=ZERO, text=html.escape(HEADER), size=Decimal(20))
         self.children.append(header)
-        top = header.box.y2 + SECTION_MARGIN
+        top = header.box.y2 + (TEXT_MARGIN * 2 if summary_rows else SECTION_MARGIN)
         if summary_rows:
             summary_wrap = TranslateShape([SummarySection(summary_rows)], y=top)
             self.children.append(summary_wrap)
-            top = summary_wrap.box.y2 + SECTION_MARGIN
+            top = summary_wrap.box.y2 + TEXT_MARGIN * 3
         section1_wrap = TranslateShape([section1], y=top)
         section2_wrap = TranslateShape(
             [section2], y=section1_wrap.box.y2 + SECTION_MARGIN
@@ -837,7 +841,7 @@ class ProgressSVG(Container):
             stroke-width: 0.5;
         }}
         text {{
-            alignment-baseline: central;
+            dominant-baseline: central;
             font-family: sans-serif;
             font-size: {TEXT_SIZE}px;
             fill: var(--fg, black);
@@ -849,7 +853,7 @@ class ProgressSVG(Container):
           }}
         }}
         tspan {{
-            alignment-baseline: central;
+            dominant-baseline: central;
             fill: var(--fg, inherit);
         }}
     </style>
