@@ -159,7 +159,7 @@ these are `le` only:
 | Recipe | Does |
 | --- | --- |
 | `run-orig [STEP...]` | run the unmodified original in DOSBox |
-| `bss [-v] [MODULE...]` | check each module's `_BSS` order against `wcc386`'s layout rule |
+| `bss [-v] [MODULE...]` | check each module's `_BSS` order against `wcc386`'s layout rule; `bss MODULE OLD=NEW...` tries names without touching `src/` or `symbols.csv`, `bss --hash NAME...` prints their hashes |
 
 Compiles run on half the cores; `JOBS` overrides it. Ghidra is found
 through `GHIDRA`, `ghidra.path` or the newest match of `ghidra.search`

@@ -2,6 +2,8 @@
 the original's addresses in config/symbols.csv.
 
     bss.py [-v] [MODULE...]
+    bss.py MODULE OLD=NEW...    the same with variables renamed, to try names
+    bss.py --hash NAME...       each NAME's hash, to pick names that sort
 
 wcc386 10.6 does not lay out uninitialized globals in definition order.
 It sorts them by
@@ -23,6 +25,13 @@ a header can move another module's variables into the next block.
 
 The source is preprocessed with wcc386 and parsed with pycparser. With
 -v, prints every variable with its block and hash.
+
+OLD=NEW renames OLD to NEW in the preprocessed source (whole words) and
+gives NEW OLD's row in symbols.csv, so candidate names for unnamed
+variables can be checked before src/ and symbols.csv are touched; the
+module's variables are always listed then. --hash prints hashpjw % 241
+of each name: within one size class and block, the original's addresses
+must ascend with it (ties: the later declaration first).
 """
 import csv, glob, os, re, subprocess, sys, tempfile
 
@@ -118,16 +127,28 @@ def size_class(size):
 
 def main():
     args = sys.argv[1:]
-    verbose = "-v" in args
+    if args[:1] == ["--hash"]:
+        for n in args[1:]:
+            print(f"{hashpjw(n):3} {n}")
+        return
+    renames = dict(a.split("=", 1) for a in args if "=" in a)
+    args = [a for a in args if "=" not in a]
+    verbose = "-v" in args or bool(renames)
     mods = [a for a in args if a != "-v"] or \
         [os.path.basename(p)[:-2] for p in sorted(glob.glob(os.path.join(ROOT, "src", "*.c")))]
     syms = {}
     for r in csv.reader(open(os.path.join(ROOT, "config", "symbols.csv"))):
         if r[3].startswith("_") and r[1].isdigit():
             syms[r[3][1:]] = (int(r[0], 16), int(r[1]))
+    for old, new in renames.items():
+        if old in syms:
+            syms[new] = syms.pop(old)
     bad = 0
     for mod in mods:
-        order, defs = entries(preprocess(os.path.join(ROOT, "src", mod + ".c")))
+        text = preprocess(os.path.join(ROOT, "src", mod + ".c"))
+        for old, new in renames.items():
+            text = re.sub(r"\b" + re.escape(old) + r"\b", new, text)
+        order, defs = entries(text)
         index = {n: i for i, n in enumerate(order) if n}
         block = lambda n: (index[n] + FIRST) // BLOCK
         missing = [d for d in defs if d not in syms]
