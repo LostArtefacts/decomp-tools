@@ -16,12 +16,19 @@ the things a red function usually gets wrong, and prints them for NAME:
           reference, or a subtree. The operand with the highest key goes
           first; to swap two operands, change what feeds their hashes
           (see docs/vc5-c2.md).
-  --regs  the register allocator: each candidate value, its weight and
-          the register it gets.
-  --x87   the x87 scheduler: each FPU op's priority and the fxch/fld
-          st(0) decisions.
+  --regs  the local register picker: each value that gets a scratch
+          register, the register, and how it was found (preferred,
+          round robin over eax/ecx/edx with where the pointer stood,
+          first free, evicted). "-- rotation reset" marks the function
+          start. Values the global allocator keeps in esi/edi/ebx/ebp
+          are not shown yet.
+  --x87   reserved for the x87 scheduler (not reversed yet; prints
+          nothing).
 
-With no option it shows all of them. --raw adds the node addresses and
+With no option it shows all of them. Output lines name symbols as
+`name#ID` (front end ID, hex) and compiler temps as `temp@SLOT`; memory
+references as `[base+offset]`; opN is a c2 opcode. A run takes about
+15 seconds; set C2O_DEBUG=1 to see gdb's own output. --raw adds the node addresses and
 raw words. The rules behind all of this, with the C2.EXE addresses, are
 in docs/vc5-c2.md.
 

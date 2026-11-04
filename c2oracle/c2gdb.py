@@ -157,8 +157,39 @@ def after_sort():
         out("    %s  %s" % (key(k), describe(k)))
 
 
-class Header(gdb.Breakpoint):
-    pass
+REGS = {1: "eax", 2: "ecx", 3: "edx", 4: "ebx", 5: "esp", 6: "ebp", 7: "esi", 8: "edi"}
+ROTATION = 0x491120  # -> next entry of the preference table 0x491100
+PREFS = 0x491100  # 1 2 3 7 8 4 6 0: eax ecx edx esi edi ebx ebp
+pick = {}
+
+
+# Local register picker 0x435c37 (ecx = tuple, edx = its use): remember the
+# rotation pointer, then 0x435f38 (ecx = register) commits the choice.
+def picker():
+    pick["node"] = reg("ecx")
+    pick["use"] = reg("edx")
+    pick["rot"] = (rd(ROTATION) - PREFS) // 4
+
+
+# Where 0x435f38 was called from: how the register was found.
+PATHS = {
+    0x435CF9: "round robin",  # next free of eax ecx edx from the rotation pointer
+    0x435DB5: "preferred",  # the value's own preferred register (+0x2c)
+    0x435E74: "first free",  # first free in eax ecx edx esi edi ebx ebp
+    0x435E22: "evicted",  # 0x45d93e freed one
+}
+
+
+def assign():
+    r = reg("ecx")
+    ret = rd(reg("esp"))
+    if ret not in PATHS:
+        out("reg %-3s <- %s   (caller %x)" % (REGS.get(r, r), describe(reg("edx")), ret))
+        return
+    node = pick.pop("node", None)
+    rot = REGS.get(rd(PREFS + 4 * pick.get("rot", 0)), "?")
+    out("reg %-3s <- %s   (%s; round robin was at %s)" % (REGS.get(r, r), describe(pick.get("use", 0)) if node else "?",
+                                                         PATHS[ret], rot))
 
 
 def main():
@@ -169,6 +200,10 @@ def main():
     inf = gdb.selected_inferior()
     if "sort" in WHAT:
         Stop(0x4052F9, after_sort)
+    if "regs" in WHAT:
+        Stop(0x435C37, picker)
+        Stop(0x435F38, assign)
+        Stop(0x42A90E, lambda: out("-- rotation reset to eax"))
     print("== %s" % FUNC)
     gdb.execute("continue")
 
