@@ -23,10 +23,13 @@ counts of each.
 With game.format = "le", it also counts the data segments that match,
 and once the standalone exe is built it adds four rows of it: its code,
 initialized data and BSS, each split into the bytes built from source
-(our modules and the libraries, green), from asmgen.py's disassembly
-or with bytes written as `db` in an asm module's code (yellow) and cut from the original as blobs by link_le.py (red); and
-its image bytes identical to the original's, split the same way, then
-the ones that differ.
+(our modules and the libraries, green), from assembly that stands in
+for the original's source (yellow: asmgen.py's output, an asm module
+with `db` in its code, or one of progress.compiled, modules the
+original compiled from C, however clean their assembly) and cut from
+the original as blobs by link_le.py (red); and its image bytes
+identical to the original's, split the same way, then the ones that
+differ.
 A function without a size in symbols.csv takes the one in
 build/functions.csv, from `just analyze`. One with size 0 shares its
 code with another, as wcc386 does for identical functions; it counts
@@ -870,16 +873,24 @@ class ExeStatsLE(TypedDict):
     fixups: tuple[int, int]
 
 
+COMPILED = set(project.config.get("progress", {}).get("compiled", []))
+
+
 def generated(path: str) -> bool:
-    """Whether the object at `path` is built from asmgen.py's output: a
-    src/ .asm that opens with `.586p` and has no `.model`, as asmgen
-    writes them and the game's own assembly never is, or one with a
-    `db` in a code segment, bytes the assembler was not given as
-    instructions (asmgen's, or hand-written for what MASM cannot
-    encode). A `db` in a data segment is data, as anyone writes it."""
-    source = os.path.join(ROOT, "src", os.path.splitext(os.path.basename(path))[0] + ".asm")
+    """Whether the object at `path` is built from assembly that stands
+    in for the original's source: a src/ .asm of a module the original
+    compiled from C (progress.compiled), one that opens with `.586p`
+    and has no `.model`, as asmgen writes them and the game's own
+    assembly never is, or one with a `db` in a code segment, bytes the
+    assembler was not given as instructions (asmgen's, or hand-written
+    for what MASM cannot encode). A `db` in a data segment is data, as
+    anyone writes it."""
+    module = os.path.splitext(os.path.basename(path))[0]
+    source = os.path.join(ROOT, "src", module + ".asm")
     if not os.path.exists(source):
         return False
+    if module in COMPILED:
+        return True
     with open(source, errors="replace") as f:
         text = f.read()
     return (text.lstrip().startswith(".586p") and ".model" not in text) or db_in_code(text)
@@ -986,7 +997,7 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
     ]
     if exe and LE:
         fixup_gaps = [] if exe["fixups"][0] == exe["fixups"][1] else [f"{exe['fixups'][1] - exe['fixups'][0]} fixups differ"]
-        cheats = {SymbolStatus.DECOMPILED: "disassembled by asmgen", SymbolStatus.NONMATCHING: "blobs"}
+        cheats = {SymbolStatus.DECOMPILED: "stand-in assembly", SymbolStatus.NONMATCHING: "blobs"}
 
         def origin_row(title: str, name: str, source: int, asm: int, blob: int) -> SummaryRow:
             bar = ProgressBar({SymbolStatus.NAMED: source, SymbolStatus.DECOMPILED: asm,
@@ -1002,7 +1013,7 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
             origin_row("Executable BSS", "BSS", *exe["bss"]),
             SummaryRow("Executable image", image, [f"{exe['pieces']} blob pieces left"] + fixup_gaps, kb,
                        "Exe image", "differ", fixup_gaps,
-                       words={SymbolStatus.NAMED: "identical", SymbolStatus.DECOMPILED: "identical by asmgen",
+                       words={SymbolStatus.NAMED: "identical", SymbolStatus.DECOMPILED: "identical by stand-ins",
                               SymbolStatus.NONMATCHING: "copied blobs"}),
         ]
     elif exe:

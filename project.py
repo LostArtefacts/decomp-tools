@@ -136,6 +136,9 @@ DEFAULTS = {
     "tools": {
         "remote": "git@github.com:LostArtefacts/decomp-tools.git",  # where `just tools-push` pushes
     },
+    "progress": {
+        "compiled": [],  # src/ .asm modules the original compiled from C: yellow in the chart until they are C
+    },
 }
 
 def merge(defaults, values, where=""):
