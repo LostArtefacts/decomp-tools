@@ -57,9 +57,10 @@ PRODIDS = {0: "Unmarked", 1: "Import0", 2: "Linker510", 3: "Cvtomf510", 4: "Link
 
 
 class PE:
-    def __init__(self, path):
+    def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = path
-        self.data = d = open(path, "rb").read()
+        with open(path, "rb") as stream:
+            self.data = d = stream.read()
         self.pe = pe = struct.unpack_from("<I", d, 0x3C)[0]
         self.nsec, = struct.unpack_from("<H", d, pe + 6)
         self.optsz, = struct.unpack_from("<H", d, pe + 20)
@@ -264,9 +265,10 @@ def report_imports(ours, orig):
     bytes_line("IAT", ours.read(ours.base + rva_o, size_o), orig.read(orig.base + rva, size))
 
 
-def read_map(path=MAP):
+def read_map(path: str | os.PathLike[str] = MAP) -> dict[str, tuple[int, str]]:
     """{symbol: (address, object)} from the link map."""
-    text = open(path, encoding="latin-1").read()
+    with open(path, encoding="latin-1") as stream:
+        text = stream.read()
     if "Preferred load address is 00400000" not in text:
         sys.exit(f"{path} is not the exe's map: run `just exe`")
     syms = {}
