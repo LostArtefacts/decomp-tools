@@ -284,7 +284,7 @@ def text_range():
     return 0, 0
 
 
-TEXT = text_range()
+TEXT = text_range() if project.FORMAT == "pe" else (0, 0)
 
 
 def is_code(r):
@@ -321,6 +321,9 @@ def main():
     names = sys.argv[1:]
     if not names:
         sys.exit(__doc__)
+    if project.FORMAT == "le":
+        import asmgen_le
+        return asmgen_le.main(names)
     w = Writer(names)
     for _ in range(200):
         text = w.source()

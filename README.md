@@ -207,8 +207,8 @@ puts it on `main` at the same commit.
 | `gate.py` | the commit rules `[hooks]` turns on, for the hooks |
 | `hooks/` | `commit-msg` and `pre-commit` |
 
-The DOS backend's own, which `build.py`, `compare.py`, `patch_exe.py`
-and `seed_symbols.py` hand over to with `game.format = "le"`:
+The DOS backend's own, which `build.py`, `compare.py`, `patch_exe.py`,
+`seed_symbols.py` and `asmgen.py` hand over to with `game.format = "le"`:
 
 | File | Does |
 | --- | --- |
@@ -217,6 +217,7 @@ and `seed_symbols.py` hand over to with `game.format = "le"`:
 | `build_watcom.py` | compiles `src/*.c` with `wcc386` and assembles `src/*.asm` with MASM `ML` under Wine |
 | `compare_le.py` | compares OMF objects with the LE image function by function, every fixup resolved; places and compares the data segments |
 | `patch_le.py` | hooks the compiled functions into a copy of the original as a new object |
+| `asmgen_le.py` | writes a whole module (code, data, BSS) of the original as MASM source, symbols and labels from the fixup table, checked byte for byte |
 | `link_le.py` | links the standalone exe with wlink: the objects in the original's order, the rest of the original cut into generated OMF objects |
 | `seed_symbols_le.py` | adds Ghidra's functions to `symbols.csv` and names Watcom's library functions by fingerprint |
 | `functions.py` | lists function starts in the flattened executable |
