@@ -149,6 +149,7 @@ def original_fixups(le):
 
 
 ALIGN = {0: 1, 1: 1, 2: 2, 3: 16, 4: 256, 5: 4}  # OMF segment alignments
+LINKER_SYMBOLS = {"_edata", "_end"}  # wlink's, at the ends of DGROUP's data and BSS
 
 
 def place_modules(orig):
@@ -352,6 +353,42 @@ def find_pieces(le, mods):
     return pieces, regions
 
 
+def split_stack(le, mods, pieces, regions, symbols=None, fixups=None):
+    """Splits the stack off the last piece of the stack's object: returns
+    the size for wlink's option stack when wlink makes all of it (the
+    piece is gone then), or None, when the piece keeps what something
+    reaches and a STACK piece after it is the rest."""
+    if symbols is None:
+        symbols = load_symbols()
+    if fixups is None:
+        fixups = sorted(set(original_fixups(le)))
+    images = {base: data for base, data, _ in le.image()[0]}
+    # The stack: the end of the last object after its highest fixup target.
+    last = max((p for p in pieces if p.obj == le.esp_obj - 1), key=lambda p: p.end)
+    esp = le.objects[le.esp_obj - 1]["base"] + le.esp
+    # The modules' STACK segments (the startup's) end the stack.
+    esp = min([a for a, _, n, si in regions if mods[n][1].segments[si].cls == "STACK"] + [esp])
+    assert esp == last.end, f"the stack pointer {esp:#x} is not at the end of the last blob"
+    stack = None
+    base = le.objects[last.obj]["base"]
+    img = images[base]
+    if (last.cls == "BSS" and not any(img[last.start - base:esp - base])
+            and not any(last.start < a < esp or s for a, s, _, _ in symbols if last.start <= a < esp)):
+        # Nothing but zeros that no module's data reaches after the last
+        # one: wlink's stack, from the paragraph after it, as big as the
+        # original's by option stack (the end of the BSS is wlink's _end).
+        stack = le.objects[le.esp_obj - 1]["base"] + le.esp - ((last.start + 15) & ~15)
+        pieces.remove(last)
+    else:
+        top = max(t for _, _, t in fixups if t < esp)
+        top = max(top, max(a + s for a, s, _, _ in symbols if a < esp))
+        low = (top + 0x10) & ~0xF
+        pieces.append(Piece(low, esp, last.obj, "STACK", "STACK", len(mods) - 1))
+        pieces[-1].use32, pieces[-1].dgroup = last.use32, last.dgroup
+        last.end = low
+    return stack
+
+
 def branch_fixups(image, piece, starts):
     """Finds the relative calls and jumps from piece to function starts outside it."""
     base, mem = image
@@ -383,19 +420,8 @@ def main():
     symbols = load_symbols()
     starts = {a for a, size, _, _ in symbols if size and a < project.CODE[1]}
 
-    # The stack: the end of the last object after its highest fixup target.
-    last = max((p for p in pieces if p.obj == le.esp_obj - 1), key=lambda p: p.end)
     fixups = sorted(set(original_fixups(le)))
-    esp = le.objects[le.esp_obj - 1]["base"] + le.esp
-    # The modules' STACK segments (the startup's) end the stack.
-    esp = min([a for a, _, n, si in regions if mods[n][1].segments[si].cls == "STACK"] + [esp])
-    assert esp == last.end, f"the stack pointer {esp:#x} is not at the end of the last blob"
-    top = max(t for _, _, t in fixups if t < esp)
-    top = max(top, max(a + s for a, s, _, _ in symbols if a < esp))
-    low = (top + 0x10) & ~0xF
-    pieces.append(Piece(low, esp, last.obj, "STACK", "STACK", len(mods) - 1))
-    pieces[-1].use32, pieces[-1].dgroup = last.use32, last.dgroup
-    last.end = low
+    stack = split_stack(le, mods, pieces, regions, symbols, fixups)
 
     by_addr = sorted((p.start, p.end, p) for p in pieces)
     reg = sorted([(a, e, ("mod", n, si)) for a, e, n, si in regions] +
@@ -479,7 +505,7 @@ def main():
 
     # The modules' externals must all resolve. One no fixup uses only pulls
     # in a library module (__8087, _fltused_, __argc); the first blob defines it.
-    defined = set(owned) | {p.label for p in pieces}
+    defined = set(owned) | {p.label for p in pieces} | LINKER_SYMBOLS
     for _, mod, _ in mods:
         defined |= set(mod.publics) | set(mod.absolutes)
     used = {f.target[1] for _, mod, _ in mods for s in mod.segments[1:] for f in s.fixups if f.target[0] == "ext"}
@@ -508,7 +534,7 @@ def main():
         "option quiet",
         f"option map={winpath(os.path.join(LINK, NAME + '.map'))}",
         f"name {winpath(OUT)}",
-    ] + [f"file {winpath(p)}" for p in order]
+    ] + ([f"option stack={stack:#x}"] if stack else []) + [f"file {winpath(p)}" for p in order]
     with open(os.path.join(LINK, NAME + ".lnk"), "w") as f:
         f.write("\n".join(lnk) + "\n")
     w = watcom()

@@ -898,6 +898,7 @@ def exe_stats_le() -> ExeStatsLE | None:
     orig = le.LE(project.ORIGINAL)
     mods = link_le.place_modules(compare_le.Original(compare_le.EXE))
     pieces, regions = link_le.find_pieces(orig, mods)
+    link_le.split_stack(orig, mods, pieces, regions)
     gen = [generated(path) for path, _, _ in mods]
 
     def kind(cls: str) -> str:
