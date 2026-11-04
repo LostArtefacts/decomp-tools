@@ -58,6 +58,13 @@ class SymbolStatus(StrEnum):
     TODO = auto()
 
 
+CAPTIONS = {
+    SymbolStatus.NAMED: "Matching, named",
+    SymbolStatus.DECOMPILED: "Matching, unnamed",
+    SymbolStatus.NONMATCHING: "Not matching yet",
+    SymbolStatus.TODO: "Not decompiled yet",
+}
+
 PLACEHOLDER = re.compile(r"[A-Za-z]+[0-9a-f]{6}\b")
 
 
@@ -161,7 +168,6 @@ DOCUMENT_MARGIN = Decimal(2)
 GRID_MAX_SQUARES = 50
 GRID_SQUARE_SIZE = Decimal(12)
 GRID_SQUARE_MARGIN = Decimal(3)
-PROGRESS_BAR_SIZE = Decimal(6)
 LEGEND_SQUARE_SIZE = GRID_SQUARE_SIZE
 LEGEND_SQUARE_MARGIN = GRID_SQUARE_MARGIN
 LEGEND_ROW_PADDING = Decimal(3)
@@ -504,16 +510,9 @@ class LegendSection(Container):
     def __init__(self, all_functions: list[Symbol]) -> None:
         super().__init__()
 
-        captions = {
-            SymbolStatus.NAMED: "Matching, named",
-            SymbolStatus.DECOMPILED: "Matching, unnamed",
-            SymbolStatus.NONMATCHING: "Not matching yet",
-            SymbolStatus.TODO: "Not decompiled yet",
-        }
-
         x = ZERO
         for status in SymbolStatus:
-            caption = captions[status]
+            caption = CAPTIONS[status]
             legend_text = TranslateShape(
                 [LegendText(class_name=status.value, text=caption)], x=x
             )
@@ -617,6 +616,10 @@ class ProgressBarShape(Container):
 
 
 class GridSection(Container):
+    """A header over the functions as squares (COUNT) or a treemap
+    (BYTES). Their bar and amounts are the summary's Game functions or
+    Game code row."""
+
     def __init__(
         self, header: str, all_functions: list[Symbol], mode: SumMode
     ) -> None:
@@ -624,49 +627,13 @@ class GridSection(Container):
         header_shape = Text(x=ZERO, y=ZERO, text=header)
 
         y = header_shape.size + TEXT_MARGIN
-        x2 = GRID_WIDTH
-
-        progress = by_status(all_functions, mode)
-        progress_bar = TranslateShape(
-            [ProgressBarShape(progress, GRID_WIDTH, PROGRESS_BAR_SIZE)], y=y
-        )
-
-        y = progress_bar.box.y2 + TEXT_MARGIN
 
         if mode == SumMode.COUNT:
             grid = TranslateShape([FunctionGrid(all_functions)], y=y)
         else:
             grid = TranslateShape([FunctionTreeGrid(all_functions)], y=y)
 
-        progress_text = Text(
-            x=GRID_WIDTH,
-            y=Decimal(3),
-            size=Decimal(12),
-            class_name=SymbolStatus.TODO.value,
-            anchor="end",
-            text=(
-                " · ".join(
-                    f'<tspan class="{status.value}">'
-                    + f"{format_decimal(progress.ratio(status) * 100)}%"
-                    + (
-                        f" ({progress.sections[status]})"
-                        if mode == SumMode.COUNT
-                        else ""
-                    )
-                    + "</tspan>"
-                    for status in SymbolStatus
-                )
-            ),
-        )
-
-        self.children.extend(
-            [
-                header_shape,
-                progress_text,
-                progress_bar,
-                grid,
-            ]
-        )
+        self.children.extend([header_shape, grid])
 
         self.__post_init__()
 
@@ -676,11 +643,18 @@ class SummaryRow:
     title: str
     progress: ProgressBar
     notes: list[str]
+    unit: Callable[[float | int], str] = str  # writes an amount
+
+    @property
+    def amounts(self) -> list[tuple[str, str]]:
+        """Each section that has any, with its amount written out."""
+        return [(key, self.unit(n)) for key, n in self.progress.sections.items() if n]
 
 
 class SummarySection(Container):
     """The terminal summary's rows as a table: the title, a bar in the
-    grid's colors, the percentage and the notes."""
+    grid's colors, the percentage, the amounts in their colors and the
+    notes."""
 
     def __init__(self, rows: list[SummaryRow]) -> None:
         super().__init__()
@@ -698,7 +672,9 @@ class SummarySection(Container):
                                x=label, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2),
                 Text(x=percent, y=y, text=f"{100 * row.progress.matched:.1f}%", anchor="end"),
                 Text(x=percent + details_gap, y=y + Decimal(1), size=Decimal(12),
-                     class_name=SymbolStatus.TODO.value, text=html.escape(" · ".join(row.notes))),
+                     class_name=SymbolStatus.TODO.value,
+                     text=" · ".join([f'<tspan class="{key}">{html.escape(n)}</tspan>' for key, n in row.amounts]
+                                     + [html.escape(note) for note in row.notes])),
             ])
             y += TEXT_SIZE + Decimal(2)
         self.__post_init__()
@@ -873,67 +849,70 @@ def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
                  exe: ExeStats | None = None) -> list[SummaryRow]:
     """One row per measure. The exe rows count bytes identical to the
     original at the same position."""
-    count = by_status(functions, SumMode.COUNT)
-    size = by_status(functions, SumMode.BYTES)
-    red = count.sections[SymbolStatus.NONMATCHING]
-    done = (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)
 
-    def kb(n: int) -> str:
-        return f"{n / 1000:.0f}"
-
-    def k(n: int) -> str:
-        return f"{kb(n)} KB"
+    def kb(n: float | int) -> str:
+        return f"{n / 1000:.0f} KB" if n >= 500 else f"{n} bytes"
 
     def exe_row(title: str, same: int, whole: int, notes: list[str]) -> SummaryRow:
         bar = ProgressBar({SymbolStatus.NAMED: same, SymbolStatus.TODO: whole - same})
-        return SummaryRow(title, bar, [f"{kb(same)}/{k(whole)}"] + notes)
+        return SummaryRow(title, bar, notes, kb)
 
     rows = [
-        SummaryRow("Game functions", count,
-                   [f"{sum(count.sections[s] for s in done)}/{count.total}"]
-                   + ([f"+{red} nonmatching"] if red else [])),
-        SummaryRow("Game code", size,
-                   [f"{kb(sum(size.sections[s] for s in done))}/{k(size.total)}"]
-                   + ([f"+{k(size.sections[SymbolStatus.NONMATCHING])} nonmatching"] if red else [])
-                   + ([f"{data[0]}/{data[1]} data segments"] if data else [])),
+        SummaryRow("Game functions", by_status(functions, SumMode.COUNT), []),
+        SummaryRow("Game code", by_status(functions, SumMode.BYTES),
+                   [f"{data[0]}/{data[1]} data segments"] if data else [], kb),
     ]
     if exe:
-        same, whole = exe["file"]
         rows += [
             exe_row("Library code", *exe["library"], [f"{exe['libraries']} functions"]),
             exe_row("Executable code", *exe["text"],
-                    [f"{k(exe['unknown'])} not in symbols.csv"] if exe["unknown"] else []),
+                    [f"{kb(exe['unknown'])} not in symbols.csv"] if exe["unknown"] else []),
             exe_row("Executable data", *exe["data"],
                     [f"{exe['placed']}/{exe['globals']} globals in place"]
                     + ([f"{exe['unmapped']} not in the map"] if exe["unmapped"] else [])),
-            exe_row("Executable file", same, whole, [f"{whole - same} bytes differ"] if whole > same else []),
+            exe_row("Executable file", *exe["file"], []),
         ]
     return rows
 
 
+# Each status its own block, so the bar reads in plain text.
+BLOCKS = {SymbolStatus.NAMED: "\u2588", SymbolStatus.DECOMPILED: "\u2593",
+          SymbolStatus.NONMATCHING: "\u2592", SymbolStatus.TODO: "\u2591"}
+
+
+def cells(progress: ProgressBar, bar: int) -> dict[str, int]:
+    """How many of `bar` cells each section takes: its share, rounded by
+    the largest remainders, and at least one for a section that has
+    any, taken from the largest."""
+    ideal = {key: progress.ratio(key) * bar for key, n in progress.sections.items() if n}
+    out = {key: max(int(x), 1) for key, x in ideal.items()}
+    while sum(out.values()) < bar:
+        key = max(ideal, key=lambda k: ideal[k] - out[k])
+        out[key] += 1
+    while sum(out.values()) > bar:
+        key = max(out, key=lambda k: out[k])
+        out[key] -= 1
+    return out
+
+
 def summary(rows: list[SummaryRow], width: int) -> str:
-    """The rows as a bar, the percentage and the notes.
+    """The image's header, then the rows as a bar, the percentage, the
+    amounts and the notes, each status in its own block, then a legend
+    of the blocks. Plain text, so it pastes as it shows."""
 
-    Solid blocks match, shaded blocks are implemented but nonmatching,
-    and light blocks remain.
-    """
+    def details(r: SummaryRow) -> str:
+        return "  ".join([f"{BLOCKS[key]} {n}" for key, n in r.amounts] + r.notes)
+
     title_width = max(len(r.title) for r in rows)
-    text = title_width + 2 + 8 + max(len("  " + "  ".join(r.notes)) for r in rows)
-    bar = max(min(40, width - 1 - text), 10)  # as wide as the terminal allows
-    dim, plain = ("\033[2m", "\033[0m") if sys.stdout.isatty() else ("", "")
+    text = title_width + 2 + 8 + 2 + max(len(details(r)) for r in rows)
+    bar = max(min(40, width - 1 - text), 20)  # as wide as the terminal allows
 
-    def cells(ratio: Decimal) -> int:
-        c = min(round(bar * ratio), bar)
-        return c - 1 if c == bar and ratio < 1 else c  # keep a gap visible until it is all done
-
-    lines = []
+    lines = [HEADER, ""]
     for r in rows:
-        matched = r.progress.matched
-        full = cells(matched)
-        part = cells(matched + r.progress.ratio(SymbolStatus.NONMATCHING)) - full
-        lines.append(f"{r.title:<{title_width}}  " + "\u2588" * full + "\u2592" * part
-                     + "\u2591" * (bar - full - part) + f"  {100 * matched:5.1f}%"
-                     + dim + ("  " + "  ".join(r.notes)).rstrip() + plain)
+        drawn = "".join(BLOCKS[key] * n for key, n in cells(r.progress, bar).items())
+        lines.append(f"{r.title:<{title_width}}  {drawn}  {100 * r.progress.matched:5.1f}%  {details(r)}")
+    lines.append("")
+    lines.append("  ".join(f"{BLOCKS[status]} {CAPTIONS[status]}" for status in SymbolStatus))
     return "\n".join(lines)
 
 
