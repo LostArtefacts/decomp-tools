@@ -5,8 +5,11 @@ libraries, and the backend.
     project.py get KEY        print a setting (game.name, ghidra.project...)
     project.py ghidra         print the Ghidra installation's directory
     project.py orig           verify the original's checksums, copy it to build/
+                              (le: none without the original's exe)
     project.py game           set up build/game: game data, patched exe and DLL
-                              (le: game files, CD image, hooked exe)
+                              (le: game files, CD image, hooked exe if the
+                              original is there; Watcom's DOS4GW.EXE if the
+                              game has none)
     project.py standalone     copy the standalone exe (and extras) into build/game
     project.py clean          remove build outputs (keeps the Ghidra project)
 
@@ -252,11 +255,20 @@ def orig():
     """Verifies the original's files against game.checksums and copies the
     executable to game.original."""
     sums = config["game"]["checksums"]
+    exe = os.path.join(config["game"]["dir"], config["game"]["exe"])
+    if FORMAT == "le" and not os.path.exists(exe):
+        # The LE backend links the standalone exe without the original
+        # (link_le.py); the original only verifies it then.
+        if sums:
+            subprocess.run(["sha1sum", "--quiet", "--ignore-missing", "-c", os.path.basename(sums)],
+                           cwd=os.path.join(ROOT, os.path.dirname(sums)), check=True)
+        print(f"no {exe}: working without the original")
+        return
     if sums:
         subprocess.run(["sha1sum", "--quiet", "-c", os.path.basename(sums)],
                        cwd=os.path.join(ROOT, os.path.dirname(sums)), check=True)
     os.makedirs(os.path.dirname(ORIGINAL), exist_ok=True)
-    shutil.copyfile(os.path.join(config["game"]["dir"], config["game"]["exe"]), ORIGINAL)
+    shutil.copyfile(exe, ORIGINAL)
     if FORMAT == "le":
         import le
         objs, fixups = le.write_elf(le.LE(ORIGINAL), ELF)
@@ -283,13 +295,19 @@ def game_le():
     os.makedirs(os.path.dirname(HOOKED), exist_ok=True)
     for name in config["game"]["copy"]:
         os.makedirs(os.path.dirname(os.path.join(GAME, name)), exist_ok=True)
-        shutil.copyfile(os.path.join(src, name), os.path.join(GAME, name))
+        path = os.path.join(src, name)
+        if not os.path.exists(path) and os.path.basename(name).upper() == "DOS4GW.EXE":
+            path = os.path.join(watcom(), "BINW", "DOS4GW.EXE")  # the extender Watcom ships
+        shutil.copyfile(path, os.path.join(GAME, name))
     for pattern in config["game"]["link"]:
         for path in sorted(glob.glob(os.path.join(src, pattern))):
             link = os.path.join(GAME, os.path.relpath(path, src))
             if os.path.lexists(link):
                 os.remove(link)
             os.symlink(os.path.abspath(path), link)
+    if not os.path.exists(ORIGINAL):
+        print(f"no {ORIGINAL}: no hooked exe, only the standalone one")
+        return
     patch_le.patch(HOOKED)
 
 

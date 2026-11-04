@@ -1,6 +1,6 @@
 """Links the standalone DOS executable from build/obj/ with Watcom's wlink.
 
-    link_le.py
+    link_le.py [--no-original]
 
 Writes build/<name>_standalone.exe, a DOS/4GW LE executable that runs
 without the original. The original's code and data that src/ does not
@@ -46,6 +46,16 @@ original's interleaving of them with the other libraries is kept. A
 module without code goes where neither its empty code segments nor the
 empty data segments of the modules after it pad anything, as in the
 original's link.
+
+Each link with the original writes config/link_order.txt: the objects in
+link order, the empty segments that keep the original's objects in
+place, the entry symbol and the stack size. Without the original
+(game.original missing, or --no-original), the link takes all of that
+from the file instead, links the modules of src/ and the libraries in
+that order, and takes the DOS stub from the Watcom installation
+(BINW/WSTUB.EXE). That works once no blob is left: a stretch the file
+records as the original's, or a module of build/obj/ the file lacks,
+is an error.
 """
 import csv, glob, os, struct, subprocess, sys
 
@@ -148,6 +158,8 @@ def original_fixups(le):
                 yield src, kind, le.objects[obj - 1]["base"] + target
 
 
+EMPTIED = {}  # an emptied module's path: (its object, the segments emptied)
+ORDER = "config/link_order.txt"
 ALIGN = {0: 1, 1: 1, 2: 2, 3: 16, 4: 256, 5: 4}  # OMF segment alignments
 LINKER_SYMBOLS = {"_edata", "_end"}  # wlink's, at the ends of DGROUP's data and BSS
 
@@ -186,10 +198,12 @@ def place_modules(orig):
         if gone:
             with open(path, "rb") as f:
                 raw = omf.empty_segments(f.read(), gone)
+            source = path
             path = os.path.join(LINK if path.startswith("build/obj") else LIB,
                                 os.path.basename(path)[:-len(".obj")] + "_emptied.obj")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             write_atomic(path, raw)
+            EMPTIED[path] = (source, sorted(gone))
             mod = omf.Module(raw)
         # Data nothing in the original refers to (a module whose code was
         # eliminated) follows the same segment of the C module of src/
@@ -439,6 +453,8 @@ def branch_fixups(image, piece, starts):
 
 def main():
     os.chdir(ROOT)
+    if "--no-original" in sys.argv[1:] or not os.path.exists(project.ORIGINAL):
+        return main_without_original()
     le = LE(project.ORIGINAL)
     orig = compare_le.Original(compare_le.EXE)
     mods = place_modules(orig)
@@ -549,13 +565,121 @@ def main():
     if errors:
         sys.exit("\n".join(f"error: {e}" for e in sorted(set(errors))[:20]))
 
+    write_order(order, plan, start, stack)
     stub = le.data[:struct.unpack_from("<H", le.data, 2)[0] + (struct.unpack_from("<H", le.data, 4)[0] - 1) * 512]
     with open(os.path.join(LINK, "stub.exe"), "wb") as f:
         f.write(stub)
+    wlink(order, start, stack, os.path.join(LINK, "stub.exe"), len(plan))
+
+
+def write_order(order, plan, start, stack):
+    """Writes config/link_order.txt: what the link without the original
+    takes from the original's (see main_without_original)."""
+    lines = [
+        "# The link's input, in its order, from the link with the original:",
+        "# tools/link_le.py writes it and links from it without the original.",
+        f"start {start}",
+    ] + ([f"stack {stack:#x}"] if stack else [])
+    for path in order:
+        name = os.path.basename(path)[:-len(".obj")]
+        if name in plan:
+            lines.append(f"blob {name}")
+            for p in plan[name]:
+                flags = (" use32" if p.use32 else "") + (" dgroup" if p.dgroup else "")
+                lines.append(f"    segment {p.seg} {p.cls} {p.start:#x} {p.end:#x}{flags}")
+                lines += [f"    public {n} {off:#x}" for n, off in sorted(p.publics.items(), key=lambda kv: (kv[1], kv[0]))
+                          if n != p.label]
+        elif path in EMPTIED:
+            source, gone = EMPTIED[path]
+            lines.append(f"file {source} empty {' '.join(map(str, gone))}")
+        else:
+            lines.append(f"file {path}")
+    write_atomic(ORDER, ("\n".join(lines) + "\n").encode())
+
+
+def main_without_original():
+    """Links from config/link_order.txt, without the original: its module
+    order, the empty segments that keep the original's objects and their
+    order, the entry and the stack. Only possible once no blob is left;
+    the DOS stub is the Watcom installation's WSTUB.EXE."""
+    if not os.path.exists(ORDER):
+        sys.exit(f"error: no {ORDER}: link once with the original ({project.ORIGINAL})")
+    library_objects()
+    start, stack, order, plan = None, None, [], {}
+    with open(ORDER) as f:
+        lines = [l.split() for l in f if l.strip() and not l.startswith("#")]
+    errors = []
+    for words in lines:
+        kind = words[0]
+        if kind == "start":
+            start = words[1]
+        elif kind == "stack":
+            stack = int(words[1], 16)
+        elif kind == "blob":
+            plan[words[1]] = []
+            order.append(os.path.join(LINK, words[1] + ".obj"))
+        elif kind == "segment":
+            seg, cls, a, e = words[1], words[2], int(words[3], 16), int(words[4], 16)
+            if e > a:
+                errors.append(f"{a:#x}-{e:#x} ({seg}) is the original's: no module provides it")
+            p = Piece(a, a, None, seg, cls, None)
+            p.use32, p.dgroup = "use32" in words[5:], "dgroup" in words[5:]
+            p.publics = {}
+            plan[next(reversed(plan))].append(p)
+        elif kind == "public":
+            plan[next(reversed(plan))][-1].publics[words[1]] = int(words[2], 16)
+        elif kind == "file":
+            path = words[1]
+            if not os.path.exists(path):
+                errors.append(f"{path} is missing")
+                continue
+            if words[2:3] == ["empty"]:
+                with open(path, "rb") as f:
+                    raw = omf.empty_segments(f.read(), {int(i) for i in words[3:]})
+                path = os.path.join(LINK if path.startswith("build/obj") else LIB,
+                                    os.path.basename(path)[:-len(".obj")] + "_emptied.obj")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                write_atomic(path, raw)
+            order.append(path)
+    listed = {w[1] for w in lines if w[0] == "file"}
+    errors += [f"{p} is not in {ORDER}: link once with the original to place it"
+               for p in sorted(glob.glob("build/obj/*.obj")) if p not in listed]
+    if start is None or start.startswith("__blob"):
+        errors.append(f"the entry point is in the original's code ({start})")
+    if errors:
+        sys.exit("\n".join(f"error: {e}" for e in errors[:20]) + f"\nerror: cannot link without {project.ORIGINAL}")
+    # The externals no fixup uses, which only pull in library modules
+    # (__8087, _fltused_, __argc): the first blob defines them.
+    mods = [m for p in order if os.path.basename(p)[:-4] not in plan for m in omf.modules(p)]
+    defined = LINKER_SYMBOLS | {n for ps in plan.values() for p in ps for n in p.publics}
+    for mod in mods:
+        defined |= set(mod.publics) | set(mod.absolutes)
+    for ps in plan.values():
+        for p in ps:
+            p.publics = {n: o for n, o in p.publics.items() if not any(n in m.publics for m in mods)}
+    used = {f.target[1] for mod in mods for s in mod.segments[1:] for f in s.fixups if f.target[0] == "ext"}
+    missing = sorted({e for mod in mods for e in mod.externs[1:] if e not in defined})
+    if [e for e in missing if e in used]:
+        sys.exit(f"error: unresolved: {' '.join(e for e in missing if e in used)}")
+    first = plan[next(iter(plan))][0]
+    for e in missing:
+        first.publics[e] = 0
+    os.makedirs(LINK, exist_ok=True)
+    for name, ps in plan.items():
+        for p in ps:
+            p.publics[p.label] = 0
+        write_blob(name, ps, [], {}, None)
+    stub = os.path.join(watcom(), "BINW", "WSTUB.EXE")
+    if not os.path.exists(stub):
+        sys.exit(f"error: no {stub}")
+    wlink(order, start, stack, stub, 0)
+
+
+def wlink(order, start, stack, stub, blobs):
     lnk = [
         "format os2 le",
         "option osname='DOS/4G'",
-        f"option stub={winpath(os.path.join(LINK, 'stub.exe'))}",
+        f"option stub={winpath(stub)}",
         f"option start={start}",
         "option nodefaultlibs",
         "option quiet",
@@ -572,7 +696,7 @@ def main():
         print(out)
     if r.returncode or not os.path.exists(OUT):
         sys.exit("error: wlink failed")
-    print(f"{OUT}: {len(order)} objects, {len(plan)} of them blobs")
+    print(f"{OUT}: {len(order)} objects, {blobs} of them blobs")
 
 
 def write_blob(name, ps, images, piece_fix, target):
@@ -627,6 +751,8 @@ def write_blob(name, ps, images, piece_fix, target):
             o.rec(0x91, body)
 
     for p, si in segs:
+        if p.end == p.start:
+            continue
         img = next(i for i in images if i[0] <= p.start <= i[0] + len(i[1]))
         mem = bytearray(img[1][p.start - img[0]:p.end - img[0]])
         mem += bytes(p.end - p.start - len(mem))
