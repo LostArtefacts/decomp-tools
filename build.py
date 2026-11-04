@@ -347,8 +347,9 @@ def link_order(objs, symbols, how):
         first   their lowest address
         source  no sorting: source file order
 
-    Objects that define no such function (data, globals) go last, in
-    their given order."""
+    An object that defines no such function (data, globals) goes right
+    before the object after it in path order, as a project file that lists
+    its sources alphabetically links them."""
     if how == "source":
         return list(objs)
     if how not in ("median", "first"):
@@ -360,12 +361,17 @@ def link_order(objs, symbols, how):
                       if s.section > 0 and obj.sections[s.section - 1].flags & coff.CODE}
     count = collections.Counter(n for names in code.values() for n in names)
 
-    def key(path):
+    keys = {}
+    after = (1 << 32, 0)
+    for path in sorted(objs, reverse=True):
         addrs = sorted(symbols[n] for n in code[path] if count[n] == 1 and n in symbols)
-        if not addrs:
-            return 1 << 32
-        return addrs[len(addrs) // 2] if how == "median" else addrs[0]
-    return sorted(objs, key=key)
+        if addrs:
+            after = (addrs[len(addrs) // 2] if how == "median" else addrs[0], 0)
+            keys[path] = after
+        else:
+            keys[path] = (after[0], after[1] - 1)
+            after = keys[path]
+    return sorted(objs, key=keys.get)
 
 
 def link_exe(objs, exe_objs=None, feats=()):
