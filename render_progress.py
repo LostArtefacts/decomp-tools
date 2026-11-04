@@ -54,8 +54,9 @@ from project import GAME_END
 ROOT = project.ROOT
 TITLE = project.config["game"]["title"]
 LE = project.FORMAT == "le"
-ORDER_HEADER = "progress by function order:" if LE else "progress according to the physical function order:"
-SIZE_HEADER = "progress by function size:" if LE else "progress according to the function sizes:"
+ORDER_HEADER = "By function order"
+SIZE_HEADER = "By function size"
+HEADER = TITLE if LE else f"{TITLE} · {project.config['game']['exe']}"
 DATA_STATS: dict[str, tuple[int, int]] = {}
 
 
@@ -174,6 +175,7 @@ LEGEND_ROW_PADDING = Decimal(3)
 LEGEND_MARGIN = Decimal(15)
 TEXT_SIZE = Decimal(15)
 TEXT_MARGIN = Decimal(5)
+LEGEND_TEXT_SIZE = Decimal(12)
 SECTION_MARGIN = GRID_SQUARE_SIZE + LEGEND_MARGIN
 GRID_WIDTH = (
     GRID_MAX_SQUARES * (GRID_SQUARE_SIZE + GRID_SQUARE_MARGIN)
@@ -454,6 +456,7 @@ class LegendText(Container):
             x=LEGEND_SQUARE_SIZE + TEXT_MARGIN,
             y=ZERO,
             text=text,
+            size=LEGEND_TEXT_SIZE,
         )
 
         square_shape = Square(
@@ -497,27 +500,21 @@ class LegendSection(Container):
     def __init__(self, all_functions: list[Symbol]) -> None:
         super().__init__()
 
-        functions_status_map = get_functions_status_map(all_functions)
-
-        self.title = Text(x=ZERO, y=0, text="Legend:")
-        self.children.append(self.title)
-
         captions = {
-            SymbolStatus.NAMED: "Function decompiled, with a known name",
-            SymbolStatus.DECOMPILED: "Function decompiled, without a known name yet",
-            SymbolStatus.NONMATCHING: "Function decompiled, not matching yet",
-            SymbolStatus.TODO: "Function not yet decompiled",
+            SymbolStatus.NAMED: "Matching, named",
+            SymbolStatus.DECOMPILED: "Matching, unnamed",
+            SymbolStatus.NONMATCHING: "Not matching yet",
+            SymbolStatus.TODO: "Not decompiled yet",
         }
 
-        y = self.title.size + TEXT_MARGIN
+        x = ZERO
         for status in SymbolStatus:
             caption = captions[status]
-            functions = functions_status_map[status]
             legend_text = TranslateShape(
-                [LegendText(class_name=status.value, text=caption)], y=y
+                [LegendText(class_name=status.value, text=caption)], x=x
             )
             self.children.append(legend_text)
-            y = legend_text.box.y2 + LEGEND_ROW_PADDING
+            x += LEGEND_SQUARE_SIZE + TEXT_MARGIN + Decimal(len(caption)) * LEGEND_TEXT_SIZE / 2 + LEGEND_MARGIN * 2
 
         self.__post_init__()
 
@@ -722,39 +719,85 @@ class GridSection(Container):
         self.__post_init__()
 
 
+SUMMARY_TITLES = {
+    "game funcs": "Game functions",
+    "game code": "Game code",
+    "lib code": "Library code",
+    "exe code": "Executable code",
+    "exe data": "Executable data",
+    "exe file": "Executable file",
+}
+
+
+class SummarySection(Container):
+    """The terminal summary's rows as a table: the title, a bar in the
+    grid's colors, the percentage and the counts behind it."""
+
+    def __init__(self, rows: list[tuple]) -> None:
+        super().__init__()
+        name = project.config["game"]["exe"]
+        label = Decimal(130)
+        bar = GRID_WIDTH - label - Decimal(260)
+        percent = label + bar + Decimal(60)
+        y = ZERO
+        for title, matched, nonmatching, whole, ratio, unit, notes in rows:
+            whole = whole or 1
+            x = label
+            for n, status in [(matched, SymbolStatus.NAMED), (nonmatching, SymbolStatus.NONMATCHING),
+                              (whole - matched - nonmatching, SymbolStatus.TODO)]:
+                dx = bar * Decimal(max(n, 0)) / Decimal(whole)
+                if dx > 0:
+                    self.children.append(Rectangle(
+                        x=x, y=y + (TEXT_SIZE - GRID_SQUARE_SIZE) / 2,
+                        dx=dx, dy=GRID_SQUARE_SIZE, class_name=status.value))
+                x += dx
+            details = " · ".join([f"{ratio} {unit}"] + [n for n in notes.split("  ") if n and n != name])
+            self.children.extend([
+                Text(x=ZERO, y=y, text=html.escape(SUMMARY_TITLES.get(title, title))),
+                Text(x=percent, y=y, text=f'<tspan text-anchor="end">{100 * matched / whole:.1f}%</tspan>'),
+                Text(x=percent + TEXT_MARGIN * 3, y=y + Decimal(1), size=Decimal(12),
+                     class_name=SymbolStatus.TODO.value, text=html.escape(details)),
+            ])
+            y += TEXT_SIZE + TEXT_MARGIN
+        self.__post_init__()
+
+
 class ProgressSVG(Container):
-    def __init__(self, all_functions: list[Symbol]) -> None:
+    def __init__(self, all_functions: list[Symbol], summary_rows: list[tuple] | None = None) -> None:
         super().__init__()
 
-        y = ZERO
-
         section1 = GridSection(
-            header=f"{TITLE} {ORDER_HEADER}",
+            header=ORDER_HEADER,
             all_functions=all_functions,
             mode=SumMode.COUNT,
         )
 
         section2 = GridSection(
-            header=f"{TITLE} {SIZE_HEADER}",
+            header=SIZE_HEADER,
             all_functions=all_functions,
             mode=SumMode.BYTES,
         )
 
         legend = LegendSection(all_functions)
 
-        section1_wrap = TranslateShape(
-            [section1], y=legend.box.y2 + SECTION_MARGIN
-        )
+        header = Text(x=ZERO, y=ZERO, text=html.escape(HEADER), size=Decimal(20))
+        self.children.append(header)
+        top = header.box.y2 + SECTION_MARGIN
+        if summary_rows:
+            summary_wrap = TranslateShape([SummarySection(summary_rows)], y=top)
+            self.children.append(summary_wrap)
+            top = summary_wrap.box.y2 + SECTION_MARGIN
+        section1_wrap = TranslateShape([section1], y=top)
         section2_wrap = TranslateShape(
             [section2], y=section1_wrap.box.y2 + SECTION_MARGIN
         )
-        legend_wrap = TranslateShape([legend])
+        legend_wrap = TranslateShape([legend], y=section2_wrap.box.y2 + TEXT_MARGIN * 2)
 
         self.children.extend(
             [
-                legend_wrap,
                 section1_wrap,
                 section2_wrap,
+                legend_wrap,
             ]
         )
 
@@ -767,6 +810,8 @@ class ProgressSVG(Container):
         y2 = self.box.dy + DOCUMENT_MARGIN * 2
         return (
             f"""<svg version="1.1"
+    width="{format_decimal(x2)}" height="{format_decimal(y2)}"
+    style="display: block; margin: 0 auto"
     viewBox="{format_decimal(x1)} {format_decimal(y1)} {format_decimal(x2)} {format_decimal(y2)}"
     xmlns="http://www.w3.org/2000/svg">
     <style>
@@ -882,14 +927,11 @@ def exe_stats(root: str) -> ExeStats | None:
     }
 
 
-def summary(functions: list[Symbol], width: int, data: tuple[int, int] | None = None,
-            exe: ExeStats | None = None) -> str:
-    """One row per measure: a bar, the percentage and the counts behind it.
-
-    Solid blocks match, shaded blocks are implemented but nonmatching,
-    and light blocks remain. The exe rows count bytes identical to the
-    original at the same position.
-    """
+def summary_rows(functions: list[Symbol], data: tuple[int, int] | None = None,
+                 exe: ExeStats | None = None) -> list[tuple]:
+    """One row per measure: (title, matched, nonmatching, whole,
+    matched/whole as text, unit, notes). The exe rows count bytes
+    identical to the original at the same position."""
     done = [f for f in functions if f.status in (SymbolStatus.NAMED, SymbolStatus.DECOMPILED)]
     red = [f for f in functions if f.status == SymbolStatus.NONMATCHING]
     total = sum(f.size for f in functions) or 1
@@ -900,7 +942,6 @@ def summary(functions: list[Symbol], width: int, data: tuple[int, int] | None = 
     def k(n: int) -> str:
         return f"{n / 1000:.0f}k"
 
-    # (title, matched, nonmatching, whole, matched/whole as text, unit, notes)
     name = TITLE if LE else project.config["game"]["exe"]
     rows = [("game funcs", len(done), len(red), count, f"{len(done)}/{len(functions)}", "functions",
              (f"+{len(red)} nonmatching  " if red else "") + name),
@@ -918,6 +959,15 @@ def summary(functions: list[Symbol], width: int, data: tuple[int, int] | None = 
                      + (f"  {exe['unmapped']} not in the map" if exe["unmapped"] else "")))
         n, t = exe["file"]
         rows.append(("exe file", n, 0, t, f"{k(n)}/{k(t)}", "bytes", f"{t - n} bytes differ" if t > n else ""))
+    return rows
+
+
+def summary(rows: list[tuple], width: int) -> str:
+    """The rows as a bar, the percentage and the counts behind it.
+
+    Solid blocks match, shaded blocks are implemented but nonmatching,
+    and light blocks remain.
+    """
     widths = [max(len(r[i]) for r in rows) for i in (0, 4)]
     text = widths[0] + 2 + 8 + max(len(f"  {r[4]:>{widths[1]}} {r[5]}  {r[6]}".rstrip()) for r in rows)
     bar = max(min(40, width - 1 - text), 10)  # as wide as the terminal allows
@@ -952,10 +1002,10 @@ def main() -> None:
     output = args[0] if args else os.path.join(root, "docs/progress.svg")
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
     functions = collect_functions(root, built_svg)
+    rows = summary_rows(functions, DATA_STATS.get(root), exe_stats(root))
     with open(output, "w") as handle:
-        print(ProgressSVG(functions).render(), file=handle)
-    print(summary(functions, shutil.get_terminal_size((100, 24)).columns, DATA_STATS.get(root),
-                  exe_stats(root)))
+        print(ProgressSVG(functions, rows).render(), file=handle)
+    print(summary(rows, shutil.get_terminal_size((100, 24)).columns))
 
 
 if __name__ == "__main__":
