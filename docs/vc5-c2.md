@@ -354,3 +354,72 @@ include moves).
   `$T` constant) now falls back to the other initialised section
   (config/layout/data.py), so a variant like it can be measured once its
   code fits.
+
+## The inliner (C2.EXE, P2\inline.c)
+
+Inline expansion is done by the back end: C2.EXE carries the source
+path `E:\utc\src\\P2\inline.c` (0x49e144), used by two cold assert
+stubs at 0x4721f6 and 0x4722c4 that jump back into 0x44b6c7..0x44b9e0,
+so the inliner's code is around 0x44b000. Not reversed yet. What test
+compiles of winvid.cpp show:
+
+- The order of the inline definitions in the file does not matter
+  (all 96 orders of the node constructor, Head, Tail and the sorted
+  insert, before and after the callback, compile the same).
+- `#pragma inline_depth` counts where the callee is DEFINED: with Head
+  made `inline` and `#pragma inline_depth(1)` or `(2)` just before
+  Head's definition (back to 3 before Tail's), every expansion of Head
+  keeps its node constructor as a call, while Tail's expansions inline
+  it. That is exactly the target's hw half of EnumDisplayModesCallback
+  (the first ~150 instructions match; 799 -> 453 differing bytes in the
+  object). Not landed: the sw half still inlines Head and Tail's
+  constructor, so the function is 1029 bytes for a 945-byte slot.
+- There is a per-caller budget, consumed in source order, and it does
+  not count plain statements: 16 extra `dwCount++` in Head, Tail or the
+  sorted insert, or duplicating whole blocks of the caller itself,
+  change nothing. It counts branches in the inlined bodies: with each
+  extra `if (x == 7) x = 3;` in the sorted insert, 6 make the sw Tail a
+  call, 12 the whole sw sorted insert; 7 to 10 in Head make the sw Head
+  a call while the hw Head still inlines (the target's pattern for
+  Head). The sw Tail's constructor as a call (also the target's) never
+  appeared in a 6x14x4 grid of such bloats, so the window for it is
+  narrower than one branch. So the target's inlined bodies are worth
+  more branches than ours, or the budget unit is not the branch.
+- The same uneven pattern is in WinVidGetDisplayAdapters: the target
+  inlines driverName's ~STRING_FLAGGED and calls driverDescription's
+  (FlaggedStringDelete); ours calls both.
+- The atexit helper at 0x444a80 ($E2, DisplayAdapterList's destructor;
+  the target inlines everything, ours calls DisplayModeListDelete and
+  ~DISPLAY_ADAPTER_INFO) does not move with DisplayModeListDelete
+  defined right after its class, ~DISPLAY_MODE_LIST defined out of the
+  class after it, an explicit empty ~DISPLAY_ADAPTER_INFO, the
+  STRING_FLAGGED destructor in the class, or inline_depth 6/8 at the top,
+  before ~DISPLAY_ADAPTER_LIST or before the DisplayAdapterList
+  definition (any combination of up to three).
+- th08's "parameter types matter" lesson: swRendererSupported as BOOL or
+  int costs 30 bytes, BYTE is the same as bool; the sorted insert taking
+  `const DISPLAY_MODE &` is the same.
+
+## Shifts that worked (2026-11-05)
+
+- 3dinsert.cpp: `<math.h>` + `<direct.h>` before 3dglodef.h (+392 IDs):
+  visible_zclip 92 -> 38 in the exe. Its pad map: only shifts that are
+  multiples of 8 work, then with period 128 from 256 on (256+8 = 264,
+  392, 520 best); below 256 nothing does. What is left is x87 order
+  (flat for 0..39 more declarations in front of it).
+- 3d_gen.cpp: calc_object_vertices needed +12/13 or +26..31 (or +44/45,
+  +108/109) while calc_vertice_light after it must not move. Moving the
+  InsertSprite pointer and the ins_objectGT3 prototype from between the
+  two functions to just before calc_object_vertices shifts only the
+  first one: 31 -> 2 bytes, the other unchanged. calc_vertice_light is
+  flat for 1..199 declarations in front of it.
+
+## Flat under header sweeps and top pads 32..4096 (step 32)
+
+texture.cpp (AddTexturePage16, LoadTexturePage), draw.c (GetRoomBounds),
+output.cpp (S_CalculateLight, S_GetObjectBounds), skidoo.c
+(SkidooControl), winvid.cpp and hwinsert.cpp: these reds are not
+ID-driven. scalespr.cpp moves only 32 bytes (top pads 256..511 mod 512:
+S_DrawSprite 434 -> 431, draw_scaled_spriteC 424 -> 395) and its
+remaining differences are global register allocation (which values get
+esi/edi/ebx/ebp, and the target's extra stack slot).
