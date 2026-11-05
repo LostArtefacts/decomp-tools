@@ -130,6 +130,31 @@ hoisting order matches; what has to change is which temp each address
 was given when it was first created, or the rough savings of some of
 them.
 
+Later drafts. Case 1's `fieldb4 += field15c` (instead of
+`fieldb4 = &fieldb4[field15c]`) is an `add [b4],esi` the split pass
+turns into exactly the original's load/add/store, and case 1 then
+matches up to the stack offsets, but one noconf temp just before the
+call temps goes away (131 temps, the five at 103..106 and 127) and the
+sort gives &b8 &bc &100 &108 data. No single extra temp fixes that
+list; two noconf temps do, one created among the case 2 / case 3 ids
+(positions 60..86) and one between the loads of field154 / fieldb4
+and the CSE of `fieldb4 + field15c` at the top of case 1 (position
+113 or 114); so does dropping one of the CSE'd `video->video` /
+`sound->sound` loads (t102, t108, t109) plus one noconf temp created
+between t17 and t18, early in the loop body (position 117). Dead locals and the usual
+neutral rewrites (`!x` / `x == 0`, operand order of compares, `!= 0`
+on calls) change neither the code nor the temp list.
+
+The registers of case 3 then are one place behind the original's in
+the split round-robin (the `buffer2` update: original esi, draft ecx;
+`field124 -= buffer`: esi / ecx), while case 1, which the pass visits
+last, matches: the original makes one attempt more before the
+`buffer2` split and one fewer between it and case 1. The original's
+`buffer2` update is the split `add [edx+48h],eax` (`+=`); with `+=`
+the draft gets the same instruction, but the attempt gets ecx and is
+undone, and `sound->sound` is in eax instead of edx, so its
+`mov edx,[esp+18h]` cannot be scheduled above the Func4f55c call.
+
 ## How GiveBestReg picks a register
 
 The candidates are tree->regs in table order: eax, edx, ebx, ecx, esi,
