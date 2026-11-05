@@ -666,6 +666,54 @@ superseded by it):
   first one: 31 -> 2 bytes, the other unchanged. calc_vertice_light is
   flat for 1..199 declarations in front of it.
 
+## Source shapes that the allocator is not behind (2026-11-05, agent 9)
+
+Four of the top reds turned out not to be register allocation at all;
+look for these before reading `--global`:
+
+- Immediate size gives away a field's signedness. `r->bound_active -= 2`
+  on a uint16 field is `66 81 /0 fffe` (imm16, the constant is 65534);
+  on a sint16 field it is `66 83 /0 fe` (imm8, -2). A 66 81 / 66 83
+  difference on a 16-bit add or sub means the field is signed: room.h's
+  bound_active is sint16 (GetRoomBounds 371 -> 50 exe bytes; the rest is
+  shift and the door-plane sum).
+- `n << 1` and `n * 2` are different expressions to the optimiser's CSE
+  even though both come out as `lea r,[n+n]`. When the target computes
+  the same `lea` twice into two stack slots (AddTexturePage16:
+  `memcpy(dst, src, width << 1); src += width * 2;`), one of them is
+  a shift. This is also where that function's "one more slot" came
+  from (frame 0x80 vs 0x7c); 394 -> 34 exe bytes. `+`, casts to DWORD,
+  sizeof and a uint16 pointer step are all merged with `* 2`.
+- Early returns stay in source order: the target tests
+  `if (!n || off screen) return 0;` before `if (n < 8 || clipped)
+  return -1;` in S_GetObjectBounds, and nothing in the back end swaps
+  two such ifs. Moving `n++` after the divide that follows it moves the
+  loads the scheduler puts around the idiv (111 -> 35).
+
+Flat this round (so not the cause): GetRoomBounds' door-plane sum under
+all 6 term orders x 4 inner orders, the 24 local declaration orders,
+index vs pointer forms, dropping the casts and inverting the test
+(the sort keys tie in the first sort and are decided by temp slots
+in the second); LoadTexturePage's `jge; mov al,1; test al,al; je`
+(unique in the exe) under 9 DX_TRY bodies, Core's `Log 0&&` statement
+and 9 condition shapes; AddTexturePage16's 110 single declaration moves
+and counter directions; SkidooControl's frame sync under 3 sum shapes
+(inverting the if costs 18); draw_scaled_spriteC's inner and outer loop
+forms (for down, for up, while: the optimiser makes the same loops).
+
+The frame (P2\stack.c, the function at 0x43f93b, its assert returns to
+0x43f9a1) is not reversed. What the targets show: a stack home is
+shared by ranges whose memory lives don't overlap, and a parameter's
+home is reused once the parameter sits in a register. draw_scaled_spriteC,
+slots from esp+0x10 after the pushes: target ubase, vadd, source, dqptr,
+uadd, skip, i (second loop), pix (second loop), with x2, then width,
+then the first loop's i in inptr's home; ours width, vadd, dqptr+i,
+source, uadd, x2+skip, pix, with ubase in inptr's home. The target's
+extra slot is the second loop's i: there dqptr is reloaded from its
+slot inside the loop (not colored), so i cannot share it; ours keeps
+dqptr in eax in that loop. So the slot difference follows from the
+coloring, and it is the coloring that has to change.
+
 ## Flat under header sweeps and top pads 32..4096 (step 32)
 
 texture.cpp (AddTexturePage16, LoadTexturePage), draw.c (GetRoomBounds),
