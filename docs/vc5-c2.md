@@ -197,3 +197,13 @@ fdivs and patches with fxch.
   callback on, swRendererSupported moves to bl as in the target
   (otherwise it is spilled to the stack). Next: vary the sizes of the
   inlined bodies, since the budget is probably counted in front end nodes.
+  When `#pragma inline_depth` takes effect: what counts is the depth in
+  effect where the callees are defined (Head, Tail and the constructor
+  come after the callback in the file). A pragma just before the
+  callback and a reset right after it change nothing, and replacing the
+  file's first pragma changes nothing either. `inline_depth(2)` from the
+  node constructor on, with Head made `inline`, cuts the callback's
+  differing bytes from about 826 to 589, but Head is then never emitted
+  out of line (0x4470c0 is lost), and the exe link fails ("No room for
+  allocation" for a `$T` constant of setup.obj in config/layout/data.py),
+  so it's not landed.
