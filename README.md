@@ -227,6 +227,7 @@ The DOS backend's own, which `build.py`, `compare.py`, `patch_exe.py`,
 | `compare_le.py` | compares OMF objects with the LE image function by function, every fixup resolved; places and compares the data segments |
 | `patch_le.py` | hooks the compiled functions into a copy of the original as a new object |
 | `asmgen_le.py` | writes a whole module (code, data, BSS) of the original as MASM source, symbols and labels from the fixup table, checked byte for byte |
+| `asmclean_le.py` | the same as source MASM: the code followed from the functions and jump tables, every instruction a mnemonic (the spelling that reproduces it, checked line by line from ml's listing), data typed by its accesses, `align` for MASM's fill; `--keep` takes the label names of an existing module |
 | `link_le.py` | links the standalone exe with wlink: the objects in the original's order, the rest of the original cut into generated OMF objects |
 | `seed_symbols_le.py` | adds Ghidra's functions to `symbols.csv` and names Watcom's library functions by fingerprint |
 | `functions.py` | lists function starts in the flattened executable |
