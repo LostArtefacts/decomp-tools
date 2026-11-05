@@ -274,3 +274,83 @@ followed by a copy of the epilogue. InsertGT3_ZBuffered needs the second.
   out of line (0x4470c0 is lost), and the exe link fails ("No room for
   allocation" for a `$T` constant of setup.obj in config/layout/data.py),
   so it's not landed.
+
+## Headers scored by exe bytes
+
+The earlier header searches kept a variant only when it made a function
+match. Scored by the bytes of the exe instead, one or two real header
+lines at the top of a file took 3362 bytes off in one round:
+
+- larafire.c: `<stdio.h>` before game.h (LaraGun 535 -> 3: the bitfield
+  store `lara.flare_control_left = ...` is an XOR of a temp and `lara`,
+  and `lara`'s ID had to rise above the temp's slot, 0x12a).
+- control.c: `<windows.h>` + `<stdio.h>` (ObjectOnLOS, 694 -> 0; dinput.h
+  alone leaves 12).
+- hair.c: `<windows.h>` (HairControl: the csv size also had to take in its
+  jump table, 2533 -> 2556).
+- skidoo.c: `<ddraw.h>` + `<malloc.h>` (SkidManControl 320 -> 0; ddraw.h
+  alone breaks SkidmanPush and SkidooDynamics, malloc.h puts them back).
+- output.cpp: `<dinput.h>` first (S_GetObjectBounds 267 -> 111, and
+  S_InsertBackPolygon is no longer shifted).
+- text.c: `<string.h>` (GetTextScaleV, 52).
+- 3d_gen.cpp: `<io.h> <conio.h> <direct.h> <sys/stat.h>` after string.h
+  (+384 IDs), then the InsertSprite/InsertTransQuad pointers and the
+  ins_objectGT3/GT4 prototypes moved from the bottom `extern "C" {}`
+  block to just before calc_vertice_light (+22, each line with its own
+  `extern "C"`): calc_roomvert 542 -> 0, calc_object_vertices 367 -> 31,
+  calc_vertice_light 211 -> 55.
+
+Why big shifts: the sort compares fold16(ID) of symbols with the slot
+numbers of compiler temps, so a function often needs its IDs moved by
+hundreds, and the band is narrow: in 3d_gen.cpp the top of the file
+had to move by exactly 384 mod 512 (365..410 all break a transform).
+Small pad scans (0..64) never see this.
+
+Method that found these, in this order:
+
+1. Header sweep per file: each system header alone at the top, then
+   `<windows.h>` + one, then the best + one, scoring the sum of
+   differing bytes over every function the object defines (a variant
+   that improves one function but breaks a neighbour shows up as a net
+   number). Real headers only; a header the file already gets through
+   another one still moves IDs when it comes first.
+2. If nothing fits, pad-scan the top of the file in big steps (multiples
+   of 128 up to 4096), then narrow down to the exact band.
+3. Measure what each header costs: the front end ID of a symbol is the
+   4 bytes (little endian) just before `\0name\0` in the `sy` file that
+   c2oracle's stand-in keeps; compile the file with a header added and
+   compare the ID of one of the function's parameters. Costs are not
+   additive when headers share includes, so check the sum the same way.
+   In 3d_gen.cpp (after the existing standard.h list): io 217, wchar
+   248, mbstring 197, typeinfo 182, iostream 851, fstream 1060, dplay
+   428, conio 62, sys/stat 53, direct 52, search 46, tchar 45, malloc
+   41, mbctype 35, new/eh 18, locale 16, setjmp/dos 15, signal 10,
+   sys/types 7, stddef 2, errno/limits/fcntl/share 1, ctype/float/excpt
+   0; objbase/ole2/winsock -369 (before windows.h they change what it
+   pulls in).
+4. Then pad-scan locally for what is left and supply it by moving real
+   declarations from below the last function that cares.
+
+Flat under all of this: S_CalculateLight (pads 1..300 before it),
+S_GetObjectBounds (pads 1..1000 before it), SkidooControl (1..1024),
+texture.cpp, scalespr.cpp, draw.c (GetRoomBounds), winvid.cpp (headers,
+include moves).
+
+## winvid.cpp: inlining
+
+- The atexit helper at 0x444a80 (DisplayAdapterList's destructor, 194
+  bytes) has the whole chain inlined in the target: node delete,
+  DISPLAY_ADAPTER, both DISPLAY_MODE_LISTs with DisplayModeListDelete,
+  the STRING_FLAGGED members. Ours calls DisplayModeListDelete
+  (0x447060). `#pragma inline_depth(5)` or `(8)` before the list's
+  destructor or before the DisplayAdapterList definition changes
+  nothing; before DisplayModeListDelete's definition it costs
+  WinVidStart 430 bytes.
+- `inline_depth(2)` before the node constructor with Head made inline
+  (826 -> 589 bytes in the object) is not usable: the callback then
+  comes out 37 bytes longer than its 945-byte slot, so the exe layout
+  overflows ("The linked code exceeded its recovered layout"). The data
+  side of that failure ("No room for allocation" for setup.obj's
+  `$T` constant) now falls back to the other initialised section
+  (config/layout/data.py), so a variant like it can be measured once its
+  code fits.
