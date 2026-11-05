@@ -225,6 +225,57 @@ else branch's `buffer2 +=` above the call moves a temp from 52 to 50.
 `data = data + ...[1]` adds one at 80 (131 temps; dropping any of
 49..53 then gives the right slots, but the registers are far off).
 
+Where temps come from. Temps with savings at RoughSortTemps time
+(the "conflict" ones) are user locals, `?:` results, hoisted loop
+invariants, the const temps, and CSEs that span a block boundary
+(t108: `video->video` loaded in the `data >= fieldd8` test and reused
+in its then branch). A local in a nested block gets its id where the
+block starts, a function-scope one at the function start (list
+position 117). A local whose value is used once is propagated away
+and leaves the list unchanged.
+
+On the `buffer_size =` draft (s2c) the slot order comes out right
+with a conflict temp at 74 from any of: a block local `i` holding
+`field110` across the `field110 >= field38` test, a block local
+`q = &movie->field110`, or `field110 + 1 > field38` as the test (the
+`+ 1` is then a cross-block CSE with the increment). None of them
+keeps the code: the local makes the increment `inc eax` in the
+register of the old value instead of the original's `lea esi,[eax+1]`
+(the original's `eax` there is the split pass's load, reused by the
+scoreboarder, not a temp), and the register pressure moves case 1's
+`fieldc0` code. Neutral at 73/74 (list unchanged): `-= -1`,
+`1 + x`, `(*(dword *)&x)++`, `*&x += 1`, a cast on the delta,
+`x + -1` / `-1 + x` indexes, `if (x < y) { ... } else return`,
+`else { ... }` around the rest, an extra block, `?:`-free
+assignment chains. `(&field60[x])[-1]` drops four temps.
+
+shellsim on s2c also finds: turning t168 (position 39, a noconf temp
+in the case 3 `fieldc8` update; `fieldc8 = fieldc8 + (...)` adds a
+temp right after it) into a conflict temp, or dropping any noconf in
+12..46 (the case 3 tail) and adding a conflict temp next to t168.
+Block locals for `field10c` or `field10c - 1` at the `fieldc8` update
+are propagated or change code. No neutral rewrite of the case 3 tail
+tried changes the list (`MemorySet` argument forms and casts, the
+`fielddc` compare reversed, `buffer_size = 0` forms). Const temps:
+`!x`, `(byte)0`, `(word)0x114`, `(video == 0) + 2` are neutral;
+`(sound ? 2 : 0) + 1` reorders the const temps; `(int)state == 1`
+adds a temp at 106.
+
+The slot fixes above leave case 3 untouched, so the case 3 registers
+are a separate problem. `--what splits` on s2c: case 3 is visited
+first; attempts 12..17 are the else branch (12, 13 the two `imul`
+with `[eax+16]`, 14 the `buffer2 +=` add, 15 `field10c++`, 16 the
+idiv, 17 the `current` compare), getting esi edi ebx ecx esi edi.
+The original's picks for 15..17 (esi, edi, eax with ebp skipped) are
+one attempt later, and its `buffer_size` update is the load/sub/store
+of a split `sub [eax+14h],edx` in edi, where s2c has a GiveRegister
+temp in ebx (the `=` form makes no split attempt). So the original
+most likely used `buffer_size -=` there and the split stuck: as the
+attempt after 12 it gets edi, shifts 13..17 by one place and puts
+15..17 where the original has them. In the fieldc4 draft the same
+`-=` split is undone. What makes the split
+stick is the open question.
+
 ## How GiveBestReg picks a register
 
 The candidates are tree->regs in table order: eax, edx, ebx, ecx, esi,
