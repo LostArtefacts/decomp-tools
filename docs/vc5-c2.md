@@ -789,3 +789,56 @@ ID-driven. scalespr.cpp moves only 32 bytes (top pads 256..511 mod 512:
 S_DrawSprite 434 -> 431, draw_scaled_spriteC 424 -> 395) and its
 remaining differences are global register allocation (which values get
 esi/edi/ebx/ebp, and the target's extra stack slot).
+
+## Big three (2026-11-05, agent 11)
+
+Exe file 1744 -> 576 differing bytes. None of these needed the
+allocator model changed; each was a source shape (and one ID shift)
+that the earlier sweeps had not tried.
+
+- S_CalculateLight (326 -> 66): `1 << (dynamic[i].falloff << 1)` in the
+  range test, `dynamic[i].falloff * 2 - intensity` in the shade. The
+  target computes `lea ecx,[edx+edx]` from the falloff it already has
+  and then reloads the field for the shade's `add ecx,ecx`; with `* 2`
+  in both, c2 CSEs them (spilling the product) and the coloring of the
+  whole dynamic loop moves. The same `<< 1` vs `* 2` rule as
+  AddTexturePage16.
+- S_CalculateLight, slot sharing: a parameter's home (room_number,
+  [esp+0x48]) goes to a spilled range that starts after the parameter's
+  last use. `brightest = 0;` before `r = &room[room_number];` starts
+  brightest while room_number is live, so brightest gets its own slot
+  and the loop counters and adder take room_number's home, as in the
+  target (74 -> 66). Left: the target's frame is 8 bytes bigger (angles
+  shares r's slot, dz's spill gets its own; ours shares dz with angles)
+  and r sits in edx (ours ecx). Flat under all 172 sampled orders of
+  the declaration lines and angles[3]/[4] (the frame is not
+  declaration-ordered).
+- S_DrawSprite (490 -> 0): Core's shape, the zero-offset case first
+  (`else if (!(x | y | z))`, which makes it the fall-through) and
+  `zp = zv / PhdPersp;` right after the branches, before the sprite
+  loads; then the products' order (z, x, y in every matrix row) needs
+  the IDs of the header globals shifted by 5 mod 16 (pads 5, 21, 53, 69
+  match; 13, 37, 45 leave 14). Pads after 3dglodef.h (moving only the
+  function's own IDs, x by +10 etc.) change nothing, although a key of
+  `fold16(ID(x)) ^ hash([phd_mxptr+off])` would predict they do: the
+  key of a product of a parameter and a matrix element read through a
+  temp is not just that XOR (not reversed). Landed with
+  `#include "../specific/time.h"` between global.h and 3dglodef.h
+  (frontend.h and sound.h there also match). The earlier pad sweep used
+  steps of 32 and missed the window: scan pads in steps of 1 over a
+  period, and again after each structural fix.
+- draw_scaled_spriteC (467 -> 49): Core's shape, `x2 -= x1; y2 -= y1;`
+  reusing the corners as width and height (no width/height/i locals),
+  the outer loop `for (; y2 > 0; y2--)`, the inner `for (j = x2; ...)`,
+  and skip computed after pixptr (467 -> 210: frame, the eax width and
+  the edx/ecx picks of the set-up code). Then `u = ubase;` BEFORE
+  `line = source + ...` in each row (202 -> 41 object bytes): which
+  of two independent statements comes first does matter when it moves
+  where a live range starts (u's range then covers the line computation
+  and the coloring of the row header changes), unlike the order of
+  independent loads. Left: u and pixptr swap esi/edx. The model gives
+  u 168 and 160 (one range per loop) and pixptr 148, so u is colored
+  first and takes edx; the target needs pixptr above both. Flat: 8
+  pixptr expression forms, `if ((pix = ...))`, `(v >> 16) << 8`, dqptr
+  as a uint8 pointer, `pixptr++` in the for clause, `v += vadd` first,
+  `j; j--` / `j--;` forms, the u init in the for clause (worse).
