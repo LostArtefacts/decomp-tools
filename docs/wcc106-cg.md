@@ -196,6 +196,35 @@ of the fieldc4 draft fixes the call region and `buffer2` split too (43
 lines differ) but makes the `buffer1` update non-RMW, which the
 original's `add [eax+44h],edx` rules out.
 
+The masked line counts above hide register differences. Comparing
+with the registers kept (only esp offsets and jump targets stripped),
+the `buffer_size =` draft still has 23 lines wrong (the fieldc4 draft
+37): the case 2 `data +=` load swaps eax/edx, the case 2 compare's
+imul, and the case 3 else branch (`buffer_size` load/sub/store in
+ebx, original edi; field10c in ecx, original esi; the idiv divisor
+and the `current` load; `lea`/`imul` of `field10c - 1`), plus the
+[R+0x14] order. Its `buffer_size` update is the original's form
+(load, sub, store), which the fieldc4 draft gets as an RMW `sub`.
+
+Since the five noconf temps at 49..53 are interchangeable in the
+sort, moving one of them into case 2 gives the fieldc4 draft's
+signature again: the case 3 fix and the slot order cannot both come
+from noconf positions alone. On the `buffer_size =` draft shellsim
+finds two other ways: any temp with a conflict (savings above 21, any
+flags) created at list position 73 or 74, or dropping one of the
+const temps (positions 0..11) and adding a temp at 57 or 61..64.
+Positions 73/74 lie between the case 2 compare (`p2` below drops a
+temp at 78) and the `fieldc4` update (64/65), that is the
+`field110 >= field38` test and `field110++`. Tried there with no
+effect on the list: `field110 += 1`, `else { field110++; }`,
+`++fieldfc == field34`, `(dword)(fieldc4 + ...video)`,
+`&(...)->video[fieldc4]`. A `?:` on `field104 == field120` lands at 80;
+`x ? 1 : 0` conditions add two const temps instead.
+`video + (dword)fieldc4` in the compare drops one at 78. Moving the
+else branch's `buffer2 +=` above the call moves a temp from 52 to 50.
+`data = data + ...[1]` adds one at 80 (131 temps; dropping any of
+49..53 then gives the right slots, but the registers are far off).
+
 ## How GiveBestReg picks a register
 
 The candidates are tree->regs in table order: eax, edx, ebx, ecx, esi,
