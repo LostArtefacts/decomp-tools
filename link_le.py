@@ -174,6 +174,7 @@ def place_modules(orig):
     parsed = [(path, mod) for path in paths for mod in omf.modules(path)]
     ends = {}  # segment name: where the last module of src/ ends it
     used = {f.target[1] for _, mod in parsed for s in mod.segments[1:] for f in s.fixups if f.target[0] == "ext"}
+    placed = []
     for path, mod in parsed:
         _, bases = compare_le.compare_module(mod, orig, by_symbol)
         bases = dict(bases)
@@ -186,6 +187,17 @@ def place_modules(orig):
             if seg and seg.size and seg.cls == "STACK" and si not in bases:
                 bases[si] = stack - seg.size  # the end of the stack, as any order fills it
                 stack -= seg.size
+        placed.append((path, mod, bases))
+    # Where the libraries' data of each segment name starts: a module of
+    # src/ without code whose data lies past it is library data too.
+    library_data = {}
+    for path, mod, bases in placed:
+        if any(mod.segments[i].is_code() and mod.segments[i].size and a >= project.GAME_END for i, a in bases.items()):
+            for i, a in bases.items():
+                seg = mod.segments[i]
+                if seg.size and not seg.is_code():
+                    library_data[seg.name] = min(a, library_data.get(seg.name, a))
+    for path, mod, bases in placed:
         # Code the original lacks is a segment its link eliminated
         # (wlink's option eliminate drops unreferenced code segments:
         # heapen's _heapenable, the viewer's functions): the module is
@@ -215,8 +227,10 @@ def place_modules(orig):
             for i, s in enumerate(mod.segments):
                 if s and s.size and i not in bases and s.name in ends:
                     bases[i] = -(-ends[s.name] // ALIGN[s.align]) * ALIGN[s.align]
-            library = any(mod.segments[i].is_code() and mod.segments[i].size and a >= project.GAME_END
-                          for i, a in bases.items())
+            sized = [(mod.segments[i], a) for i, a in bases.items() if mod.segments[i].size]
+            library = any(seg.is_code() and a >= project.GAME_END for seg, a in sized) or (
+                sized and not any(seg.is_code() for seg, _ in sized)
+                and all(a >= library_data.get(seg.name, a + 1) for seg, a in sized))
             for i, a in bases.items():
                 if not library:
                     ends[mod.segments[i].name] = a + mod.segments[i].size
