@@ -114,6 +114,32 @@ pick that went through path 1 instead). `c2oracle.py FILE NAME --regs`
 prints every pick with its path, so comparing the two sequences shows
 where they part.
 
+Where the picker is called from, and the exact path 1 conditions:
+
+- The local pass walks each block's instructions (0x42a90e resets the
+  pointer, then per instruction 0x42a99f releases the registers of values
+  that die there and 0x42aa3c gives the instruction's results registers).
+  0x42aa3c skips a result that is not a compiler temp (symbol byte +4 !=
+  3) or that already sits in a register (0x435c01 looks the value up in
+  0x491180); everything else goes through the picker, its only caller
+  being 0x42aa95. So there is no other way for a scratch temp to get a
+  register: when the target's sequence is shifted, one of its picks went
+  through path 1 or a pick happened that ours lacks.
+- Path 1, use opcode 1 (a copy): its first operand (+0x18) must be class
+  1 and that symbol's register ([[op+0x18]+8]+0x1c) in 1..8 but not 5
+  (esp). Copying a field load into a temp has a class 5 operand, so it
+  never prefers anything.
+- Path 1, use opcode 0x12 (an address computation, `add eax,0xc` for
+  `&p->field`): its first operand must be a class 5 memory reference with
+  a base (+0x24), no index (+0x1c == 0) and either +0x28 == 0 or (+0x10 &
+  0xf) == 0 with +0x20 == 0; it prefers the base node's register.
+- The value record (+0x18 of the result node) +0x1c is the value's index
+  into the interference bit sets, the same number as its temp slot; +0x2c
+  was empty on entry for every pick traced so far, so the preference
+  comes from the two rules above, not from an earlier pass.
+  `c2oracle.py --regs --raw` prints the record, its preference on entry
+  and the index under each pick.
+
 Which values live in callee-saved registers (esi/edi/ebx/ebp for whole
 ranges) is decided by the global allocator, not this picker; it walks
 the same table from 0x491104 (lines using 0x491100/0x491104 around
@@ -134,4 +160,40 @@ fdivs and patches with fxch.
   PerspectiveCorrect gets cl. The target has the same `mov eax,[esi+0x10];
   push eax` but PerspectiveCorrect in al, so its RenderMode load came
   through path 1 (or one more round robin pick happened in the same
-  stretch). A `(DWORD)` cast does not change it.
+  stretch). A `(DWORD)` cast does not change it. Also flat (identical
+  code): an unsigned RenderMode field, LONG return types on the four
+  registry helpers, a `guidString` local for the GUID calls (any subset),
+  removing the joystick block or its else, a second RenderMode call, and
+  compiling without /GX. Under the conditions above, a plain field load
+  can't take path 1, so the shift has to come from a pick ours lacks
+  earlier (two of them, mod 3) or from a PerspectiveCorrect use shape
+  we haven't found. It's worth only 42 bytes of the exe.
+- calc_roomvert (3d_gen.cpp): `--sort` shows each matrix row sorted twice.
+  The first sort (rank 03, before the loop optimiser) is not what gets
+  emitted; the second (rank 02, where the `(sint16)` vertex loads are
+  compiler temps) is. With o0 = objptr[0] (a symbol) and y, z the temps
+  for objptr[1], objptr[2], m_k the temps for the mptr loads, each product
+  hashes to 0x76 ^ h(vertex) ^ h(matrix) (0x76 = 0x143 mul ^ 0x135 and;
+  the two memory-reference opcodes cancel). The target needs, with the
+  slot numbers of that build: row 0 y > z > x (where x = 0x76 ^ fold16(ID
+  objptr) ^ fold16(ID mptr)), row 1 y > z, row 2 z > y. Source term
+  order (all 216 orders of the three rows) and local declaration order
+  (permute.py --decls, 1500 orders) produce identical code. Adding any
+  function before it moves both the IDs and the slots (one empty function
+  swapped the y/z slots), and how many temps that function uses doesn't
+  matter (the pool is recycled LIFO).
+- EnumDisplayModesCallback (winvid.cpp, 834 bytes of the exe): not c2 but
+  the front end's inliner. The target inlines InsertDisplayModeInListSorted
+  twice with an uneven pattern: hw list: Head inlined but its node
+  constructor called, Tail inlined with the constructor inlined; sw list:
+  Head called, Tail inlined with the constructor called; CompareVideoModes
+  called in both. Calls in the target: GetRenderBitDepth new ctor CVM new
+  Head CVM new new ctor new. That looks like a per-function inline budget
+  running out: making Head and CompareVideoModes `inline` (ours has them
+  out of line) gives "new new new new Tail new", so a budget exists. All
+  16 combinations of inline on Head, Tail, CompareVideoModes and the
+  constructor miss it, and so do the definition's position and
+  inline_depth 2..8 at the top of the file. With inline_depth(2) from the
+  callback on, swRendererSupported moves to bl as in the target
+  (otherwise it is spilled to the stack). Next: vary the sizes of the
+  inlined bodies, since the budget is probably counted in front end nodes.

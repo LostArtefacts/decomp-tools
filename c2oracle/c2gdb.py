@@ -169,6 +169,13 @@ def picker():
     pick["node"] = reg("ecx")
     pick["use"] = reg("edx")
     pick["rot"] = (rd(ROTATION) - PREFS) // 4
+    if RAW:
+        node = pick["node"]
+        rec = rd(node + 0x18)
+        pref = rd(rec + 0x2C)
+        sym = rd(node + 0x14)
+        out("    value %s rec %08x pref %s interf %08x" % (symbol(sym) if sym else "?", rec,
+            REGS.get(rd(pref + 0x1C), "-") if pref else "-", rd(rec + 0x1C)))
 
 
 # Where 0x435f38 was called from: how the register was found.
