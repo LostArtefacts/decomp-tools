@@ -1,6 +1,6 @@
 """Shows what Watcom 10.6's code generator decides for each function.
 
-    wccoracle.py SRC [--proc N] [--what temps,conf,regs,slots] [-- FLAGS...]
+    wccoracle.py SRC [--proc N] [--what temps,conf,regs,cands,splits,slots] [-- FLAGS...]
     wccoracle.py SRC --dump IMAGE
 
 SRC is compiled by BINNT/WCC386.EXE (the build's compiler, flags from
@@ -14,7 +14,18 @@ breakpoints in the code generator (see docs/wcc106-cg.md):
           descending). Both sorts are SortList's unstable ShellSort, so
           ties come out in an order that depends on list positions.
   regs    every GiveRegister call: the conflict, and what GiveBestReg
-          returned (0 = no register, the conflict goes to memory).
+          returned (0 = no register, the conflict goes to memory), with
+          a line per AssignConflicts pass.
+  cands   with regs: per call, the registers given so far, the first and
+          last instruction of the conflict (opcode and the temps it
+          names), the registers its neighbours use, and every candidate
+          register of GiveBestReg with why it was skipped or its
+          CountRegMoves score ("<- best" when it became the choice).
+          WCO_WALK=1 also lists the instructions of the conflict's
+          first block.
+  splits  the Pentium pass that splits `op reg,[mem]` into a load and
+          `op reg,reg`: every instruction it tries and the register it
+          picked from its round-robin (see docs/wcc106-cg.md).
   slots   the temps that got stack memory, in AllocNewLocal order, with
           the location each got.
 

@@ -28,6 +28,14 @@ CMP = {
 LOCALS_DONE = 0x94EC22     # AssignOtherLocals after the AllocNewLocal loop
 GIVE_CALL = 0x951858       # GiveRegister: call GiveBestReg(conf, tree, except, needs_one)
 GIVE_RET = 0x95185D
+SPLIT_RESET = 0x95C83B     # resets the round-robin cursors of the Pentium memory operand split
+SPLIT_PICK = 0x95C5DD      # after the pick: eax = the chosen entry of the register list, ecx = ins
+ASSIGN_CONFLICTS = 0x951900  # one register allocation pass
+GIVEN_REGS = 0x975900      # GivenRegisters, every register handed out so far
+CAND = 0x95157E            # GiveBestReg loop body: esi = candidate, edi = conf
+GREEDY_RET = 0x9515AC      # after TooGreedy( conf, reg, tree->temp ): al
+MOVES_RET = 0x9515C5       # after CountRegMoves( conf, reg, conf->tree, 3 ): eax
+CAND_NEXT = 0x951602       # every candidate ends here
 SORT_RETURNS = (0x952CE8, 0x94EAFA, 0x951974, 0x951A47, 0x94A093)
 CURR_PROC = 0x975954
 NEW_PROC = 0x932065        # NewProc: mov [CurrProc],edx (a new proc_def)
@@ -37,7 +45,7 @@ CLASS = {0: "const", 1: "mem", 2: "temp", 3: "reg", 4: "idx"}
 
 inf = None
 delta = 0
-state = {"n": 0, "pending": None}
+state = {"n": 0, "pending": None, "cand": None}
 
 
 def A(x):
@@ -134,15 +142,106 @@ def on_locals():
             out("  " + temp(n))
 
 
+def regs(v):
+    """A register set as names, 32-bit registers first."""
+    if v in REGS:
+        return REGS[v]
+    names = []
+    for bits, name in sorted(REGS.items(), key=lambda kv: -kv[0]):
+        if bits and v & bits == bits:
+            names.append(name)
+            v &= ~bits
+    if v:
+        names.append("%#x" % v)
+    return "+".join(names)
+
+
+def ins_refs(ins):
+    """The temps an instruction mentions (a scan of its operand words)."""
+    if not ins:
+        return "-"
+    temps = {}
+    for n in walk(rd(A(NAMES_TEMP)), 0):
+        temps[n] = "t%d" % rd(n + 0x24)
+    found = []
+    for off in range(0x10, 0x50, 4):
+        v = rd(ins + off)
+        if v in temps:
+            found.append("%s@%x" % (temps[v], off))
+    return "ins@%x opc %#x [%s]" % (ins, rd(ins + 0x22, 1), " ".join(found))
+
+
 def on_give():
     c = reg("eax")
-    out("give %s" % conf(c))
+    out("give %s from %#x" % (conf(c), rd(reg("esp") + 0x10) - delta))
+    if "cands" in WHAT:
+        out("     given so far %s" % regs(rd(A(GIVEN_REGS))))
+        out("     range %s .. %s" % (ins_refs(rd(c + 0x38)), ins_refs(rd(c + 0x3C))))
+        if os.environ.get("WCO_WALK"):
+            i, last = rd(c + 0x38), rd(c + 0x3C)
+            for _ in range(40):
+                out("       . " + ins_refs(i))
+                if i == last or rd(i + 0x22, 1) == 0:
+                    break
+                i = rd(i + 4)
+        state["first"] = True
 
 
-REGS = {0x1000003: "eax", 0x200000C: "edx", 0x4000030: "ebx", 0x80000C0: "ecx",
-        0x10000100: "esi", 0x20000200: "edi", 0x3: "ax", 0xC: "dx", 0x30: "bx", 0xC0: "cx",
-        0x100: "si", 0x200: "di", 0x1: "al", 0x2: "ah", 0x4: "dl", 0x8: "dh", 0x10: "bl",
-        0x20: "bh", 0x40: "cl", 0x80: "ch", 0: "memory"}
+def on_split_reset():
+    out("split pass (round-robin cursors reset)")
+
+
+def on_split_pick():
+    p, ins = reg("eax"), reg("ecx")
+    out("  split %s -> %s" % (ins_refs(ins), regs(rd(p)) if p else "none free"))
+
+
+def on_assign():
+    out("AssignConflicts")
+
+
+def on_cand():
+    esp, c, r = reg("esp"), reg("edi"), reg("esi")
+    if state.get("first"):
+        state["first"] = False
+        out("     neighbours use %s, except %s" % (regs(rd(c + 0x20)), regs(rd(esp + 0xC))))
+    why = []
+    if rd(c + 0x20) & r:
+        why.append("conflicts")
+    if rd(esp + 0xC) & r:
+        why.append("excepted")
+    state["cand"] = {"reg": r, "why": why, "best": rd(esp + 8), "score": None}
+
+
+def on_greedy():
+    if state["cand"] is not None and reg("eax") & 0xFF:
+        state["cand"]["why"].append("too greedy")
+
+
+def on_moves():
+    if state["cand"] is not None:
+        v = reg("eax")
+        state["cand"]["score"] = v - (1 << 32) if v & 0x80000000 else v
+
+
+def on_cand_next():
+    c = state["cand"]
+    state["cand"] = None
+    if c is None:
+        return
+    best = c["best"] - (1 << 32) if c["best"] & 0x80000000 else c["best"]
+    if c["score"] is None:
+        text = ", ".join(c["why"])
+    else:
+        text = "moves %d (best so far %d)%s" % (
+            c["score"], best, " <- best" if reg("ebp") == c["reg"] else "")
+    out("     %-4s %s" % (regs(c["reg"]), text))
+
+
+REGS = {0x1000003: "eax", 0x200000C: "ebx", 0x4000030: "ecx", 0x80000C0: "edx",
+        0x10000100: "esi", 0x20000200: "edi", 0x400: "ebp", 0x3: "ax", 0xC: "bx", 0x30: "cx",
+        0xC0: "dx", 0x100: "si", 0x200: "di", 0x1: "al", 0x2: "ah", 0x4: "bl", 0x8: "bh",
+        0x10: "cl", 0x20: "ch", 0x40: "dl", 0x80: "dh", 0: "memory"}
 
 
 def on_given():
@@ -174,8 +273,17 @@ def main():
     if "slots" in WHAT:
         Hook(A(LOCALS_DONE), on_locals)
     if "regs" in WHAT:
+        Hook(A(ASSIGN_CONFLICTS), on_assign)
         Hook(A(GIVE_CALL), on_give)
         Hook(A(GIVE_RET), on_given)
+    if "splits" in WHAT:
+        Hook(A(SPLIT_RESET), on_split_reset)
+        Hook(A(SPLIT_PICK), on_split_pick)
+    if "cands" in WHAT:
+        Hook(A(CAND), on_cand)
+        Hook(A(GREEDY_RET), on_greedy)
+        Hook(A(MOVES_RET), on_moves)
+        Hook(A(CAND_NEXT), on_cand_next)
 
     try:
         gdb.execute("continue")

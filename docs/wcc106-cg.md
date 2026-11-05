@@ -51,10 +51,16 @@ conflict_node: +0 next_conflict, +4 next_for_name, +8 name, +0xc
 start_block, +0x10 tree, +0x14 savings (compared unsigned), +0x54 state.
 
 hw_reg_set is one dword: bytes and words in the low bits, the 32-bit
-registers on top. eax 0x1000003, edx 0x200000c, ebx 0x4000030, ecx
-0x80000c0, esi 0x10000100, edi 0x20000200 (al 1, ah 2, dl 4, dh 8, bl
-0x10, bh 0x20, cl 0x40, ch 0x80, si 0x100, di 0x200). 0x400 also comes
-back from GiveBestReg; probably bp, not confirmed.
+registers on top. eax 0x1000003, ebx 0x200000c, ecx 0x4000030, edx
+0x80000c0, esi 0x10000100, edi 0x20000200, ebp 0x400 (al 1, ah 2, bl 4,
+bh 8, cl 0x10, ch 0x20, dl 0x40, dh 0x80, si 0x100, di 0x200). This was
+checked against compiled code (a function whose loop counter lands in
+ebx). 0x800 (probably esp) is always in the except set.
+
+instruction: +0x22 opcode (byte), +0x30 result, +0x44 operands[0],
++0x48 operands[1]. conflict_node +0x20 is with.regs, the registers its
+neighbours use (NeighboursUse fills it in GiveBestReg), and +0x38 /
++0x3c are ins_range.first / last.
 
 ## Functions
 
@@ -73,7 +79,13 @@ back from GiveBestReg; probably bp, not confirmed.
 | 0x951a34 | SortConflicts | |
 | 0x951900 | AssignConflicts | sorts at 0x95196f, then per conflict: savings 0 -> 0x9517d8 (InMemory), else 0x951820 |
 | 0x951820 | GiveRegister | BuildRegTree 0x94ea59, GiveBestReg at 0x951858, BitOff 0x950f84 + FreeAConflict 0x94ae2f on success |
-| 0x9514a8 | GiveBestReg(conf, tree, except, needs_one) | returns the hw_reg_set given (0 = none); calls NeighboursUse 0x951a84, recurses for hi/lo, 0x951374 and 0x951024 per candidate (TooGreedy / CountRegMoves, not yet told apart) |
+| 0x951f40 | RegAlloc (the loop part) | calls AssignConflicts at 0x951f9b until it returns 1; later passes only see new temps (the loads ExpandOps adds for operands left in memory) |
+| 0x9514a8 | GiveBestReg(conf, tree, except, needs_one) | returns the hw_reg_set given (0 = none); calls NeighboursUse 0x951a84, recurses for hi/lo when tree->regs is NULL, then loops over tree->regs (below) |
+| 0x951374 | TooGreedy(conf, reg, tree->temp) | called at 0x9515a7; a true result skips the candidate |
+| 0x951024 | CountRegMoves(conf, reg, conf->tree, 3) | called at 0x9515c0; the candidate's score |
+| 0x95c83b | (Pentium split pass init) | called once per function from 0x93c3ed; zeroes the round-robin cursors 0x9767bc (bytes), 0x9767b8 (words), 0x9767c0 (dwords) |
+| 0x95c5a7 | (Pentium split of one instruction) | 0x95c4de picks the register, 0x93183a builds the `mov reg,[mem]` |
+| 0x95c4de | (round-robin register pick) | the register lists are 0x96f694 for dwords (eax edx ebx ecx esi edi ebp esp), 0x96f4bc for words, 0x96f464 for bytes |
 | 0x932065 | NewProc | stores the new proc_def into CurrProc |
 
 ## What decides the stack slot order
@@ -116,18 +128,57 @@ hoisting order matches; what has to change is which temp each address
 was given when it was first created, or the rough savings of some of
 them.
 
+## How GiveBestReg picks a register
+
+The candidates are tree->regs in table order: eax, edx, ebx, ecx, esi,
+edi, ebp, then 0x800. Each one is skipped if it overlaps with.regs or
+the except set, or if TooGreedy says so; otherwise CountRegMoves scores
+it (roughly, the moves into or out of that register that the
+conflict's instructions would save; not looked at in detail). A
+candidate replaces the best so far if its score is greater (signed), or
+if it is equal and it is already in GivenRegisters (0x975900, every
+register handed out in this function so far) while the best so far is
+not. So with all scores 0 the first free register in table order wins,
+unless a later one has been used before and the earlier one has not.
+`--what regs,cands` prints all of this per conflict.
+
+## The Pentium split pass and its round-robin
+
+With -5r, after register allocation, a pass splits instructions with
+a memory operand into a load into a free register and the
+register-only operation (`sub edx,[esp+1c]` becomes `mov ecx,[esp+1c]`
+and `sub edx,ecx`); the scoreboarder later reuses the loaded register
+for other reads of the same memory (so a later `mov ecx,[esp+1c]`
+disappears, or becomes `mov ecx,esi`). These loads are not temps and
+never go through GiveRegister.
+
+The register comes from a round-robin per operand size: starting after
+the register picked last (after eax at the start of each function), the
+first one that is not live at the instruction, not used by it and not
+its result. Every attempt advances the cursor, also the ones whose
+split is undone later and leaves nothing in the final code. So one
+extra or missing split attempt anywhere earlier in the function shifts
+the register of every later split by one place in eax, edx, ebx, ecx,
+esi, edi, ebp. `--what splits` lists the attempts in order.
+
 ### rplgraph Func50d04 (proc 4 of build/rplgraph_best.c)
 
 `--what regs` lists every GiveRegister in ConfList order with the
-register it got. Many temps tie at savings 341 and 321 and alternate
-between ebx and ecx; the original's esi/edi for the loop temps has to
-come from GiveBestReg's per-register scoring (0x951374 / 0x951024),
-which the tracer does not show yet.
+register it got. The loop's short temps (loads of memory variables,
+savings 341 and 321) mostly have no neighbours but ebp and take the
+first register CountRegMoves scores highest. The registers that differ
+from the original are not from GiveRegister at all: the loop head's
+`mov ecx,[esp+1c]` / `mov esi,[esp+24]`, the loop end's
+`mov ebx,[esp+8]` and the split branch's method and pixel_bytes loads
+are split-pass loads (`--what splits`). Ours picks ebx for the loop
+end compare and ecx, esi at the loop head; the original's ecx, then
+esi, edi are each one place later in the round-robin, so the original
+made one more split attempt between the `test` of clipped_height
+before the loop and the loop end compare (in block order, where the
+loop end comes right after the pretest), or had ebx live there.
 
 ## Next steps
 
-- Hook 0x951374 and 0x951024 inside GiveBestReg to print the score
-  of each candidate register (the rplgraph question).
 - Find where rough savings (the RoughSortTemps input) are computed,
   to know what source change moves a temp out of a tie.
 - Name functions in the output (CurrProc's label to the front end
