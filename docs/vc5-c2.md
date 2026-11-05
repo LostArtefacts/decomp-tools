@@ -842,3 +842,48 @@ that the earlier sweeps had not tried.
   pixptr expression forms, `if ((pix = ...))`, `(v >> 16) << 8`, dqptr
   as a uint8 pointer, `pixptr++` in the for clause, `v += vadd` first,
   `j; j--` / `j--;` forms, the u init in the for clause (worse).
+
+## IDs moved for one function only (2026-11-05, agent 12)
+
+A pad of one symbol before InsertGT3_Sorted fixed its clip AND/OR
+order (21 -> 12) but broke InsertGT4_Sorted and the InsertObject*_Sorted
+functions after it. The shift can be confined to the function: add one
+symbol before it and take one away inside it, after its parameters
+(their IDs are what the sort key reads), so everything after it keeps
+its old IDs. Both halves are `else` labels:
+
+- `if (z >= phd_zfar) return; else if (z < phd_znear) ...` in
+  InsertLine_ZBuffered, the function before (+1, its code unchanged).
+- InsertGT3_Sorted's `if (...) { ...; return; } else { ... }` written
+  without the `else` and the body unindented (-1 after the parameters).
+
+9126202: InsertGT3_Sorted 21 -> 12, nothing else moves; exe file
+576 -> 567. Use this whenever a pad sweep in front of a function shows
+it improving while a later function breaks.
+
+Step-1 pads, 1..64 at the top of the file and 1..64 in front of each
+red function, scored over the whole object (a12/runpads.sh): flat for
+every other red (output.cpp, draw.c, 3dinsert.cpp, setup.cpp,
+texture.cpp, scalespr.cpp, hwinsert.cpp's ZBuffered pair, winvid.cpp,
+3d_gen.cpp, file.cpp); skidoo.c top pads 33..160 too (SkidooControl only
+goes 101 -> 124 from pad 118 on, the first statement's operand order).
+These reds are not ID-driven.
+
+SkidooControl: the target evaluates the frame sum's lara_item side
+first (lara_item into ecx, its anim index into edx, the skidoo index
+from ax then gets edi, anims last in eax); ours loads anims first (ecx)
+and the skidoo index takes edx, so both branches store dx and c2 merges
+the stores. Flat: Core's `fb + (frame - fb)` and 8 other sum shapes,
+casts, the anim_number assignment inside the index, pads before the
+function 1..64, and declaring anims before lara_item (anim.h ahead of
+game.h), so the order of the two shared leaves is not their ID order.
+Writing the index out again (no CSE of ax) does give lara_item first and
+two stores, but recomputes the index (+18).
+
+draw_scaled_spriteC, the u/pixptr priorities from `--global --raw`:
+pixptr loses 32 in each row header (m 4, N 8, live through) and 32 in
+each inner load block (m 8, N 4), where u gains 64 in each. Moving the
+row tail into the for clause, the inner increments into its clause,
+dropping `line` (much worse) and swapping the increments are all flat
+or worse. What would move it: two fewer ranges referenced in the row
+header (u -16, pixptr +16 over both loops).
