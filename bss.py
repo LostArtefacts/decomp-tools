@@ -66,7 +66,7 @@ def hashpjw(name):
     return h % 241
 
 
-def preprocess(src):
+def preprocess(src: str) -> str:
     w = build.watcom()
     with tempfile.TemporaryFile("w+", errors="replace") as f:
         subprocess.run(["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *build.cflags(src), "-p",
@@ -80,7 +80,11 @@ def preprocess(src):
             cont = line.rstrip().endswith("\\")
             line = ""
         out.append(line)
-    return re.sub(KEYWORDS, "", "\n".join(out))
+    text = re.sub(KEYWORDS, "", "\n".join(out))
+    # The segment:>offset operator builds a far pointer. Only declarations
+    # and calls affect symbol order; addition preserves both operand trees
+    # while allowing pycparser to read Watcom's nonstandard expression.
+    return text.replace(":>", "+")
 
 
 def entries(text):
