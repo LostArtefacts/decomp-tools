@@ -24,6 +24,13 @@ the things a red function usually gets wrong, and prints them for NAME:
           are not shown yet.
   --x87   reserved for the x87 scheduler (not reversed yet; prints
           nothing).
+  --inline  the inliner: the caller's size and budget, then each inline
+          candidate call site in the order c2 visits it, with the
+          callee's size, the depth against the site's inline_depth
+          limit, the budget left and how many sites are left at that
+          level; whether it is inlined (and what it costs: 0 up to size
+          40) or refused, and the budget its own call sites get. Only
+          with this option; NAME may be `*` for every function.
 
 With no option it shows all of them. Output lines name symbols as
 `name#ID` (front end ID, hex) and compiler temps as `temp@SLOT`; memory
@@ -151,9 +158,10 @@ def main():
     ap.add_argument("--sort", action="store_true")
     ap.add_argument("--regs", action="store_true")
     ap.add_argument("--x87", action="store_true")
+    ap.add_argument("--inline", action="store_true")
     ap.add_argument("--raw", action="store_true")
     a = ap.parse_args()
-    what = [w for w in ("sort", "regs", "x87") if getattr(a, w)] or ["sort", "regs", "x87"]
+    what = [w for w in ("sort", "regs", "x87", "inline") if getattr(a, w)] or ["sort", "regs", "x87"]
     keep = os.path.join(WORK, "keep")
     flags = front_end(a.src, keep)
     for line in back_end(flags, a.name, what, a.raw, keep):

@@ -359,9 +359,122 @@ include moves).
 
 Inline expansion is done by the back end: C2.EXE carries the source
 path `E:\utc\src\\P2\inline.c` (0x49e144), used by two cold assert
-stubs at 0x4721f6 and 0x4722c4 that jump back into 0x44b6c7..0x44b9e0,
-so the inliner's code is around 0x44b000. Not reversed yet. What test
-compiles of winvid.cpp show:
+stubs at 0x4721f6 and 0x4722c4 that jump back into 0x44b6c7..0x44b9e0.
+Those are the splicing helpers (0x44ab79 .. 0x44bdcb). The decisions
+are made in 0x42491e (once per function) and 0x4249cb (once per level,
+recursive); `c2oracle.py SRC NAME --inline` prints them.
+
+### The budget model (reversed 2026-11-05)
+
+- Every function carries a size, a word at front end symbol +0x64,
+  read from the `gl` file at 0x420ae1. The front end (c1xx) computes it;
+  c2 never changes it. The unit is roughly IL nodes: `dwCount++;` is 7,
+  `next = nextNode;` 8, `if (x == 7) x = 3;` 20, a two assignment
+  constructor 38. Line breaks, `this->`, casts, initialiser lists and
+  `a, b` comma forms cost the same; a ternary store is 7 less than the
+  if/else, a named temporary for the return value 5 more.
+- The caller's budget (0x42492f): max(1000, 2 * its own size), capped
+  at 35000. So almost every function starts with 1000.
+- 0x4251e8 collects the candidate call sites of the function, in
+  source order: calls of inline functions (declared `inline`, defined in
+  the class, or compiler generated), not calls of ordinary functions.
+  Each record holds the inline_depth limit of the call site.
+- 0x4249cb walks the sites in order. For each one, with B the budget
+  left at this level and n the number of sites left (this one
+  included):
+  1. refused if the arguments don't fit the parameters, if
+     depth > the site's limit (depth is 1 for the caller's own calls),
+     if size > 40 and size > B, or if the running total (0x490e70, the
+     caller's size plus every inlined size) is over 35000 (0x424eef ..
+     0x424f53; C4710 for an `inline` callee);
+  2. otherwise B -= size, but only if size > 40 (0x424f6b): a callee
+     of size 40 or less is free and is always inlined while the depth
+     allows;
+  3. the callee's own sites are expanded first, recursively, with the
+     budget B // n (0x424bf5: the budget is shared between the sites
+     still to come), and what they spend comes off B too (0x424c29);
+  4. then the body is spliced in (0x44ab79 .. 0x44ba88). Two late
+     checks after the payment can still refuse it (0x46b024, 0x46b06a).
+- The limit of a call site is the `#pragma inline_depth` in effect
+  where the call is written: in the caller, or in the inline body that
+  contains it. Calls inside compiler generated functions (implicit
+  constructors and destructors, `?_G` scalar deleting destructors) take
+  the pragma in effect where they were first generated. Without any
+  pragma the limit is 8.
+
+Consequences for matching:
+
+- Of two sites at the same level, a later one can be inlined after an
+  earlier one was refused only if it is smaller (or free). A free
+  callee (size <= 40) is never refused for budget.
+- The budget shrinks fast with the number of sites that follow: the
+  first of five sites passes a fifth of what is left to its own calls.
+  Extra inline calls after a site (even free ones that leave no code)
+  make that site's nested expansions poorer. Tested in
+  WinVidGetDisplayAdapters with no pragmas: 0..6 calls of a free inline
+  helper after the delete loop give, for its nested
+  DisplayModeListDelete x2 and ~STRING_FLAGGED x2, `++++`, `++++`,
+  `-+++`, `-+--`, `--+-`, `----`: four extra sites give exactly the
+  target's `--+-`.
+
+### What the target needs (winvid.cpp)
+
+Target decisions, read from the exe (+ inlined, - called):
+
+- EnumDisplayModesCallback: hw Sorted+ (Head+ (ctor-), ctor+, Tail+
+  (ctor+)); sw Sorted+ (Head-, ctor+, Tail+ (ctor-)). CompareVideoModes
+  is an ordinary function (it is placed before the callers, so it is
+  not an inline copy), so it is not a site.
+- WinVidStart: in the hw list copy, Tail+ with its ctor-; sw Tail-.
+- WinVidGetDisplayAdapters: ?_G+ ~NODE+ ~ADAPTER+, ~ML+ (DMLD-) x2,
+  ~INFO+ (driverName ~SF+, driverDescription ~SF-).
+- EnumDisplayAdaptersCallback: the node constructor and ?0ADAPTER
+  inlined, ?0INFO and both ?0ML called. The target also stores
+  node->next/previous BEFORE the body's constructors run, so the
+  adapter node has a constructor with an initialiser list
+  `(prevNode, nextNode) : next(nextNode), previous(prevNode)`; making
+  that change alone costs 66 bytes, because of the budget below.
+- $E2 (0x444a80): everything inlined, down to DisplayModeListDelete
+  and both ~STRING_FLAGGED at depth 6.
+
+What that means with the model above, with no pragma anywhere (limit
+8 everywhere):
+
+- $E2 makes the target's decisions (everything inlined).
+- The display mode node constructor must be bigger than 40 (ours is
+  38): a free callee can't be refused, but the target calls it in
+  places where it is inlined elsewhere at the same depth (Head's and
+  sw Tail's in EnumDisplayModesCallback, hw Tail's in WinVidStart,
+  which gets a budget of 8 there). Checked: with no pragma and a
+  constructor of 46 (a third store, which itself costs code, so not
+  usable), WinVidStart still matches.
+- EnumDisplayModesCallback, with Head before the loop and Tail after
+  it (our order) and Head the same size as Tail, can't be reached at
+  any sizes: sw Head refused and the later sw Tail inlined needs
+  Head > Tail + ctor. Brute force over the sizes: with the loop and
+  Tail BEFORE Head in the sorted insert (`if (head) {loop; Tail} else
+  Head`), Head == Tail == 101 works for ctor 56..69 with the sorted
+  insert at about 200..260; with our order it needs Head about 180 for
+  Tail 101.
+- WinVidGetDisplayAdapters needs exactly four more inline call sites
+  after the delete loop (or the equivalent division elsewhere): the
+  budget of ~INFO's level must be 44..87, and with one site there it is
+  831.
+- EnumDisplayAdaptersCallback refuses ?0ML (size 41) at depth 3, so the
+  budget at ?0ADAPTER's sites must be under 41; with one site at the top
+  it is 856. That needs at least six more inline sites after the
+  `new` (or deeper nesting).
+
+So with the present call graph the target can't be reached without
+pragmas: the original used more small inline functions (accessors, list
+helpers) than our source has, and a bigger node constructor. Dropping
+all five pragmas from winvid.cpp costs 506 bytes (WinVidStart 298,
+WinVidGetDisplayAdapters 145, EnumDisplayAdaptersCallback 63) and wins
+$E2; the third pragma (`inline_depth(3)` after WinVidGetDisplayAdapters)
+changes nothing on its own.
+
+Older observations, from before the model (their explanations are
+superseded by it):
 
 - The order of the inline definitions in the file does not matter
   (all 96 orders of the node constructor, Head, Tail and the sorted

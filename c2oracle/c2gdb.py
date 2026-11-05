@@ -50,7 +50,7 @@ def plain(mangled):
 
 
 def in_func():
-    return plain(func_name()) == FUNC
+    return FUNC == "*" or plain(func_name()) == FUNC
 
 
 def out(text=""):
@@ -218,6 +218,63 @@ def assign():
                                                          PATHS[ret], rot))
 
 
+# Inliner (0x42491e per function, 0x4249cb per level, see docs/vc5-c2.md).
+# In 0x4249cb's frame: [esp+0x48] budget left, [esp+0x30] depth,
+# [esp+0x2c] call sites left at this level, [esp+0x14] the site record
+# (+4 call tuple, +8 depth limit byte); ebx the callee (front end symbol:
+# +0x18 name, +0x64 size word, +0x6a flags). 0x490e70: running size.
+TOTAL = 0x490E70
+
+
+def sx16(v):
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def callee():
+    ebx = reg("ebx")
+    return "%s (size %d)" % (plain(cstr(rd(ebx + 0x18))), sx16(rd(ebx + 0x64, 2)))
+
+
+def fr(off):
+    v = rd(reg("esp") + off)
+    return v - (1 << 32) if v >> 31 else v
+
+
+def ind():
+    return "  " * max(0, fr(0x30) - 1)
+
+
+def inl_start():
+    fn = rd(reg("esi"))
+    out("caller %s: size %d, budget %d" % (plain(func_name()), sx16(rd(fn + 0x64, 2)), reg("eax")))
+
+
+def inl_site():
+    site = rd(reg("esp") + 0x14)
+    out("%ssite %s: depth %d/%d, budget %d, sites left %d, total %d" % (
+        ind(), callee(), fr(0x30), rd(site + 8) & 0xFF, fr(0x48), fr(0x2C), rd(TOTAL)))
+
+
+def inl_refuse(why):
+    return lambda: out("%s  -> refused (%s)" % (ind(), why))
+
+
+def inl_take():
+    size = sx16(reg("eax") & 0xFFFF)
+    out("%s  -> inlined, costs %d" % (ind(), size if size > 40 else 0))
+
+
+def inl_child():
+    # 0x424bf5: about to expand the callee's own sites with budget/sites left
+    out("%s  -> its own sites get %d // %d = %d" % (ind(), fr(0x48), fr(0x2C), fr(0x48) // max(1, fr(0x2C))))
+
+
+def inl_used():
+    used = reg("eax")
+    used = used - (1 << 32) if used >> 31 else used
+    out("%s  -> they used %d, budget now %d" % (ind(), used, fr(0x48) - used))
+
+
 def main():
     global inf
     gdb.execute("set pagination off")
@@ -230,6 +287,16 @@ def main():
         Stop(0x435C37, picker)
         Stop(0x435F38, assign)
         Stop(0x42A90E, lambda: out("-- rotation reset to eax"))
+    if "inline" in WHAT:
+        Stop(0x424946, inl_start)
+        Stop(0x424EEF, inl_site)
+        Stop(0x424A67, inl_refuse("arguments, depth, size or total"))
+        Stop(0x46AFB8, inl_refuse("special callee"))
+        Stop(0x46B06A, inl_refuse("not expandable"))
+        Stop(0x46B024, inl_refuse("not expandable, warned"))
+        Stop(0x424F79, inl_take)
+        Stop(0x424BF5, inl_child)
+        Stop(0x424C10, inl_used)
     print("== %s" % FUNC)
     gdb.execute("continue")
 
