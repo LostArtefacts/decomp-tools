@@ -328,6 +328,38 @@ placed between the two tests (1184, 9 lines); `do`/`while` with a
 both branches makes TwistLoop's sibling duplicate the condition into
 the then branch (1189).
 
+The split pass walks HeadBlock as MakeFlowGraph left it, which is not
+the emitted order: SortBlocks (after PostOptimize) re-sorts by
+gen_blk_id plus branch prediction. MakeFlowGraph orders the blocks by
+a depth-first search (edge 0 first, reverse postorder), then by
+intervals (ReorderBlocks), and moves return blocks to the bottom. So
+the visit order is: everything before the loop in reverse postorder,
+the mode 3 block last of those (it is reached first and only leads to
+the return block), then the loop interval starting at its header (the
+old condition block, which TwistLoop turns into the merged cont and
+condition block), then the loop body. TwistLoop's new pre-header is
+inserted right before the new head, so after the loop end block. In a
+dump (block +0x50 high word blk_id, +0x54 low word gen_blk_id and high
+word inputs, +0x58 targets, +0x5c class, edges at +0x68 + 16 * i) the
+mode 3 block is block 28 with gen 4, between the old pre-header (gen
+0x1f) and the loop end (gen 0x57).
+
+Moving each block's attempts between the pretest and the loop end
+compare (scratch bsim.py, against the picks the one extra attempt
+gives) matches only for the `pixel_bytes == 2` test blocks inside the
+loop (gen 0x3e and 0x29, both undone), which cannot come before the
+loop header in interval order. Any other move breaks earlier picks.
+So no block order of this CFG explains the original: the extra
+attempt has to be an instruction the original has in the mode 3 block
+or in the loop end block, or ebx has to be in the except set of the
+loop end compare. It also has to leave ebx free (the extra attempt
+must pick ebx so that the compare gets ecx), so it cannot be in the
+mode 3 block after `mov ebx,[page_bytes]`, nor have ebx as its result.
+Since nothing in the original's mode 3 or loop end code has a memory
+operand, it would have to be an instruction that Score,
+DeadInstructions or Conditions deletes after LdStAlloc, such as a
+constant store the scoreboarder finds redundant.
+
 ## Next steps
 
 - Find where rough savings (the RoughSortTemps input) are computed,
