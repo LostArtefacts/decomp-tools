@@ -13,12 +13,16 @@ first in build.watcom that has one. MASM is the directory holding ML.EXE
 6.11; it defaults to the first in build.masm that has one. An object is
 rebuilt when its source or any header or include file in src/ is newer,
 or when its flags changed (build/obj/flags.json records them).
-build.file_assemblers selects "wasm" for individual assembly modules;
-the default is "masm". WASM uses build.wasmflags and BINNT/WASM.EXE
-from the Watcom installation.
+build.file_assemblers selects "wasm" or "gas" for individual assembly
+modules; the default is "masm". WASM uses build.wasmflags and
+BINNT/WASM.EXE from the Watcom installation. "gas" runs GNU as
+(build.gas, natively, not under Wine) with build.gasflags on a source in
+its own syntax (`.intel_syntax noprefix` for Intel's) and converts the
+ELF object it writes to OMF with gas_omf.py.
 """
 import glob, json, os, subprocess, sys, tempfile
 
+import gas_omf
 import project
 from project import ROOT, masm, watcom
 
@@ -27,6 +31,8 @@ FILE_CFLAGS = project.config["build"]["file_cflags"]
 AFLAGS = project.config["build"]["asflags"]
 FILE_ASSEMBLERS = project.config["build"]["file_assemblers"]
 WASM_FLAGS = project.config["build"]["wasmflags"]
+GAS = project.config["build"]["gas"]
+GAS_FLAGS = project.config["build"]["gasflags"]
 
 
 def winpath(path):
@@ -41,13 +47,13 @@ def cflags(src: str) -> list[str]:
 
 def assembler(src: str) -> str:
     name = FILE_ASSEMBLERS.get(os.path.splitext(os.path.basename(src))[0], "masm")
-    if name not in ("masm", "wasm"):
+    if name not in ("masm", "wasm", "gas"):
         sys.exit(f"error: unknown assembler {name!r} for {src}")
     return name
 
 
 def asflags(src: str) -> list[str]:
-    return WASM_FLAGS if assembler(src) == "wasm" else AFLAGS
+    return {"wasm": WASM_FLAGS, "gas": GAS_FLAGS}.get(assembler(src), AFLAGS)
 
 
 def env(w):
@@ -71,7 +77,32 @@ def run(cmd, w, cwd=None):
         return code, f.read()
 
 
+def gas(src: str, obj: str) -> None:
+    """Assembles `src` with GNU as into `obj`, through an ELF object
+    beside it."""
+    elf = os.path.splitext(obj)[0] + ".o"
+    try:
+        r = subprocess.run([GAS, *asflags(src), "-o", elf, src], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, errors="replace")
+        out = (r.stdout + r.stderr).strip()
+        if r.returncode or not os.path.exists(elf):
+            sys.exit(f"{out}\nerror: {os.path.relpath(src, ROOT)} failed to assemble")
+        if out:
+            print(out)
+        with open(elf, "rb") as f:
+            data = gas_omf.convert(f.read(), winpath(src))
+    except ValueError as e:
+        sys.exit(f"error: {os.path.relpath(src, ROOT)}: {e}")
+    finally:
+        if os.path.exists(elf):
+            os.remove(elf)
+    with open(obj, "wb") as f:
+        f.write(data)
+
+
 def compile(w: str, src: str, obj: str) -> None:
+    if src.endswith(".asm") and assembler(src) == "gas":
+        return gas(src, obj)
     if src.endswith(".asm"):
         if assembler(src) == "wasm":
             cmd = ["wine", os.path.join(w, "BINNT", "WASM.EXE"), *asflags(src),

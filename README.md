@@ -222,8 +222,9 @@ The DOS backend's own, which `build.py`, `compare.py`, `patch_exe.py`,
 | File | Does |
 | --- | --- |
 | `le.py` | reads the LE executable, flattens it into an ELF file, writes a patched LE back (`roundtrip` must give the same file) |
-| `omf.py` | Watcom and MASM OMF objects and libraries |
-| `build_watcom.py` | compiles `src/*.c` with `wcc386` and assembles `src/*.asm` with MASM `ML` or per-file Watcom `WASM` under Wine |
+| `omf.py` | reads Watcom and MASM OMF objects and libraries, writes OMF objects |
+| `build_watcom.py` | compiles `src/*.c` with `wcc386` and assembles `src/*.asm` with MASM `ML` or per-file Watcom `WASM` under Wine, or GNU `as` |
+| `gas_omf.py` | converts GNU as's ELF32 objects to OMF, sections to MASM's segments, relocations to fixups |
 | `compare_le.py` | compares OMF objects with the LE image function by function, every fixup resolved; places and compares the data segments |
 | `patch_le.py` | hooks the compiled functions into a copy of the original as a new object |
 | `asmgen_le.py` | writes a whole module (code, data, BSS) of the original as MASM source, symbols and labels from the fixup table, checked byte for byte |
@@ -287,8 +288,10 @@ written as such (`0x459FF0`). `DECOMP_PROJECT` names another file.
 | `hook` | none | a Python file with the game's own build steps, see below |
 | `watcom` | `["~/opt/watcom10.6"]` | `watcom`: globs searched for Watcom C 10.6 (with `BINNT`, `H`, `LIB386`); `WATCOM` overrides it |
 | `masm` | `["~/opt/masm611"]` | `watcom`: globs searched for a directory with MASM 6.11's `ML.EXE`; `MASM` overrides it |
-| `file_assemblers` | `{}` | `watcom`: source stem to `"masm"` or `"wasm"`; unspecified files use MASM |
+| `file_assemblers` | `{}` | `watcom`: source stem to `"masm"`, `"wasm"` or `"gas"`; unspecified files use MASM |
 | `wasmflags` | `["-zq"]` | `watcom`: flags for files assembled with the Watcom installation's `BINNT/WASM.EXE` |
+| `gas` | `as` | `watcom`: GNU as, run natively (not under Wine), for files assembled with `"gas"`; `gas_omf.py` converts the ELF object it writes to OMF |
+| `gasflags` | `["--32"]` | `watcom`: its flags; the source picks its syntax, such as `.intel_syntax noprefix` |
 | `hook_base` | `0x200000` | `watcom`: where `game` loads the compiled functions |
 | `file_cflags` | `{}` | `watcom`: `{stem = [flags]}`, the whole flag list for one `src/` file instead of `cflags`, such as `player = ["-bt=dos", "-od", "-s", "-5r", "-zq"]` for `src/player.c` |
 
