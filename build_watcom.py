@@ -60,6 +60,9 @@ def env(w):
     e = dict(os.environ)
     e.setdefault("WINEPREFIX", os.path.join(ROOT, ".wine"))
     e.setdefault("WINEDEBUG", "-all")
+    # Without a display driver Wine runs the console tools without
+    # opening a console window for each of them.
+    e.setdefault("WINEDLLOVERRIDES", "winex11.drv,winewayland.drv=d")
     e["WATCOM"] = winpath(w)
     e["INCLUDE"] = winpath(os.path.join(ROOT, "src")) + ";" + winpath(os.path.join(w, "H"))
     return e
