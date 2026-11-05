@@ -257,6 +257,48 @@ made one more split attempt between the `test` of clipped_height
 before the loop and the loop end compare (in block order, where the
 loop end comes right after the pretest), or had ebx live there.
 
+The split pass is Open Watcom's LdStAlloc (cg/intel/c/x86ldstr.c):
+Enregister picks the first memory or temp operand of any instruction
+but calls, LA, CONVERT, ROUND and SELECT, and for a mov only a
+constant stored to memory or a temp; FindRegister is the round-robin
+(one rover each for byte, word and dword, so only dword attempts move
+this cursor). LdStCompress folds a split back later when the register
+buys nothing, which is what "undone" is. A traceless extra attempt
+therefore needs a non-mov instruction with a memory operand, or a
+constant store to memory, that LdStCompress or a later pass removes.
+
+The loop shape comes from TwistLoop (cg/c/loopopts.c), not the front
+end: the front end emits `init; top: if (!cond) goto out; body; cont:
+inc; goto top`, and the twist copies the condition into the pre-header
+(MakeCondition) when the condition block holds only the compare. With
+`row = 0` constant propagation turns the copy into `test h,h`; with
+`row = g ^ g` (or `g - g`, `position - position`) the copy stays
+`cmp row,h`, while the xor with memory is the extra attempt that makes
+every later pick match.
+
+In visit order the blocks around the loop are: the old pre-header
+(ends with the `test`), the mode 3 block (`mov ebx,[page_bytes]`,
+`imul ebx,eax`, `shr`, `mov esi,[source]`, call), the merged cont and
+condition block (`add row,1`, `cmp row,[esp+8]`), then the new
+pre-header with the hoisted `stride >> 1`, `clipped_width >> 1` and
+`clipped_width >> 2`. None of these has an attempt the original's
+final code could hide, so the original's extra attempt more likely
+came from another block visited in this stretch (a different block
+order) than from an extra instruction in these.
+
+Tried without a match (all keep the base's 29 lines or get worse):
+operand order, casts, `/ 4` and a local for the mode 3 argument;
+`if`/`else` instead of the early return; `continue` at the end of the
+then branch; `clipped_height > row`, `++row`, `row += 1`; `row++` at
+the end of the body or `first = 0` in the increment; `height` reused
+for clipped_height (104 lines); guards before the loop (`if (h > 0)`,
+`if (h <= 0) return;`, `== 0`, `!= 0`, with `row = 0` before or
+after): all keep the duplicate pretest because the zero for row is
+placed between the two tests (1184, 9 lines); `do`/`while` with a
+`g ^ g` init inside `if (h > 0)` (1174, 32 lines); `row++` copied into
+both branches makes TwistLoop's sibling duplicate the condition into
+the then branch (1189).
+
 ## Next steps
 
 - Find where rough savings (the RoughSortTemps input) are computed,
