@@ -29,7 +29,13 @@ LOCALS_DONE = 0x94EC22     # AssignOtherLocals after the AllocNewLocal loop
 GIVE_CALL = 0x951858       # GiveRegister: call GiveBestReg(conf, tree, except, needs_one)
 GIVE_RET = 0x95185D
 SPLIT_RESET = 0x95C83B     # resets the round-robin cursors of the Pentium memory operand split
-SPLIT_PICK = 0x95C5DD      # after the pick: eax = the chosen entry of the register list, ecx = ins
+SPLIT_TRY = 0x95C5D6       # one instruction about to be split: ecx = ins
+SPLIT_PICK = 0x95C5DD      # after the pick: eax = the chosen entry of the register list (0 = none), ecx = ins
+SPLIT_STORE = 0x95C5FF     # eax = the new `mov [mem],reg` (when the memory operand is also the result)
+SPLIT_LOAD = 0x95C633      # eax = the new `mov reg,[mem]`
+GEN_OBJECT = 0x9557E8      # after the last pass over the instructions, before the code is emitted
+HEAD_BLOCK = 0x97594C      # block: +4 first instruction, +0x28 next block
+OP_BLOCK = 0x4B            # the opcode of a block's instruction list head
 ASSIGN_CONFLICTS = 0x951900  # one register allocation pass
 GIVEN_REGS = 0x975900      # GivenRegisters, every register handed out so far
 CAND = 0x95157E            # GiveBestReg loop body: esi = candidate, edi = conf
@@ -45,7 +51,8 @@ CLASS = {0: "const", 1: "mem", 2: "temp", 3: "reg", 4: "idx"}
 
 inf = None
 delta = 0
-state = {"n": 0, "pending": None, "cand": None}
+state = {"n": 0, "pending": None, "cand": None, "splits": []}
+OPCODES = {0x26: "mov"}
 
 
 def A(x):
@@ -187,13 +194,80 @@ def on_give():
         state["first"] = True
 
 
+def name(n):
+    """One operand: tID, a register, #const, mem(symbol+offset) or [index+base+constant]."""
+    if not n:
+        return "-"
+    cls = rd(n + 4, 1)
+    if cls == 2:
+        return "t%d" % rd(n + 0x24)
+    if cls == 3:
+        return regs(rd(n + 0xC))
+    if cls == 0:
+        v = rd(n + 0x10)
+        return "#%d" % (v - (1 << 32) if v & 0x80000000 else v)
+    if cls == 1:
+        off = rd(n + 0x10)
+        return "mem(%#x%+d)" % (rd(n + 0x14), off - (1 << 32) if off & 0x80000000 else off)
+    if cls == 4:
+        c = rd(n + 0x14)
+        parts = [name(rd(n + 0xC))] + ([name(rd(n + 0x10))] if rd(n + 0x10) else [])
+        return "[%s%+d]" % ("+".join(parts), c - (1 << 32) if c & 0x80000000 else c)
+    return "?%d@%x" % (cls, n)
+
+
+def ins_text(ins):
+    """An instruction as `opcode result <- operands`."""
+    opc = rd(ins + 0x22, 1)
+    ops = [name(rd(ins + 0x44 + 4 * i)) for i in range(min(rd(ins + 0x3F, 1), 6))]
+    return "%s %s <- %s" % (OPCODES.get(opc, "op%#x" % opc), name(rd(ins + 0x30)), ", ".join(ops))
+
+
 def on_split_reset():
+    state["splits"] = []
     out("split pass (round-robin cursors reset)")
 
 
+def on_split_try():
+    state["split_ins"] = ins_text(reg("ecx"))
+
+
 def on_split_pick():
-    p, ins = reg("eax"), reg("ecx")
-    out("  split %s -> %s" % (ins_refs(ins), regs(rd(p)) if p else "none free"))
+    p = reg("eax")
+    state["splits"].append({"text": state["split_ins"], "reg": regs(rd(p)) if p else None, "new": []})
+
+
+def on_split_new():
+    if state["splits"]:
+        ins = reg("eax")
+        state["splits"][-1]["new"].append((ins, rd(ins + 0x44), rd(ins + 0x30)))
+
+
+def on_gen_object():
+    """Every split attempt with what is left of its new moves."""
+    if not state["splits"]:
+        return
+    alive = {}
+    b = rd(A(HEAD_BLOCK))
+    while b:
+        i = rd(b + 4)
+        while rd(i + 0x22, 1) != OP_BLOCK:
+            alive[i] = i
+            i = rd(i + 4)
+        b = rd(b + 0x28)
+    out("split attempts (in order; each numbered one advanced the cursor):")
+    k = 0
+    for s in state["splits"]:
+        if s["reg"] is None:
+            out("  %3s none %s" % ("", s["text"]))
+            out("        no register free, the cursor stays")
+            continue
+        left = [ins_text(i) for i, op, res in s["new"]
+                if i in alive and rd(i + 0x22, 1) == 0x26 and (rd(i + 0x44) == op or rd(i + 0x30) == res)]
+        out("  %3d %-4s %s" % (k, s["reg"], s["text"]))
+        out("        %s" % ("; ".join(left) if left else "undone (nothing left)"))
+        k += 1
+    state["splits"] = []
 
 
 def on_assign():
@@ -278,7 +352,11 @@ def main():
         Hook(A(GIVE_RET), on_given)
     if "splits" in WHAT:
         Hook(A(SPLIT_RESET), on_split_reset)
+        Hook(A(SPLIT_TRY), on_split_try)
         Hook(A(SPLIT_PICK), on_split_pick)
+        Hook(A(SPLIT_STORE), on_split_new)
+        Hook(A(SPLIT_LOAD), on_split_new)
+        Hook(A(GEN_OBJECT), on_gen_object)
     if "cands" in WHAT:
         Hook(A(CAND), on_cand)
         Hook(A(GREEDY_RET), on_greedy)

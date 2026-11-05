@@ -24,8 +24,10 @@ breakpoints in the code generator (see docs/wcc106-cg.md):
           WCO_WALK=1 also lists the instructions of the conflict's
           first block.
   splits  the Pentium pass that splits `op reg,[mem]` into a load and
-          `op reg,reg`: every instruction it tries and the register it
-          picked from its round-robin (see docs/wcc106-cg.md).
+          `op reg,reg`: every attempt in order, with the register it
+          picked from its round-robin, the instruction (opcode and
+          operands, temps as tID) and the moves of the split that are
+          left in the final code, or "undone" (see docs/wcc106-cg.md).
   slots   the temps that got stack memory, in AllocNewLocal order, with
           the location each got.
 

@@ -57,7 +57,9 @@ bh 8, cl 0x10, ch 0x20, dl 0x40, dh 0x80, si 0x100, di 0x200). This was
 checked against compiled code (a function whose loop counter lands in
 ebx). 0x800 (probably esp) is always in the except set.
 
-instruction: +0x22 opcode (byte), +0x30 result, +0x44 operands[0],
+instruction: +4 next (a block's list ends at the OP_BLOCK head, opcode
+0x4b), +0x22 opcode (byte), +0x30 result, +0x38 type_class, +0x3f
+num_operands, +0x44 operands[0],
 +0x48 operands[1]. conflict_node +0x20 is with.regs, the registers its
 neighbours use (NeighboursUse fills it in GiveBestReg), and +0x38 /
 +0x3c are ins_range.first / last.
@@ -84,7 +86,7 @@ neighbours use (NeighboursUse fills it in GiveBestReg), and +0x38 /
 | 0x951374 | TooGreedy(conf, reg, tree->temp) | called at 0x9515a7; a true result skips the candidate |
 | 0x951024 | CountRegMoves(conf, reg, conf->tree, 3) | called at 0x9515c0; the candidate's score |
 | 0x95c83b | (Pentium split pass init) | called once per function from 0x93c3ed; zeroes the round-robin cursors 0x9767bc (bytes), 0x9767b8 (words), 0x9767c0 (dwords) |
-| 0x95c5a7 | (Pentium split of one instruction) | 0x95c4de picks the register, 0x93183a builds the `mov reg,[mem]` |
+| 0x95c5a7 | (Pentium split of one instruction) | 0x95c4de picks the register, 0x93183a builds the `mov reg,[mem]` (and a `mov [mem],reg` after it when the memory operand is also the result) |
 | 0x95c4de | (round-robin register pick) | the register lists are 0x96f694 for dwords (eax edx ebx ecx esi edi ebp esp), 0x96f4bc for words, 0x96f464 for bytes |
 | 0x932065 | NewProc | stores the new proc_def into CurrProc |
 
@@ -159,7 +161,19 @@ its result. Every attempt advances the cursor, also the ones whose
 split is undone later and leaves nothing in the final code. So one
 extra or missing split attempt anywhere earlier in the function shifts
 the register of every later split by one place in eax, edx, ebx, ecx,
-esi, edi, ebp. `--what splits` lists the attempts in order.
+esi, edi, ebp. When no register is free the pick returns none and the
+cursor stays where it was.
+
+`--what splits` lists the attempts in order, once the function's
+instructions are final (at 0x9557e8, before the code is emitted): the
+register each got, the instruction as it was before the split
+(`opNN result <- operands`, temps as tID, registers by name, `#n`
+constants, `[index+base+constant]`), and below it the new moves that
+are still in the final instruction lists, as they ended up (a load the
+scoreboarder turned into `mov reg <- reg` shows that way), or "undone".
+Opcodes are printed as numbers: 0x26 is mov (MakeMove at 0x93183a
+builds it); the others look like Open Watcom's order shifted by one
+(add 1, sub 3, mul 5, div 7, the compares from 0x30), unchecked.
 
 ### rplgraph Func50d04 (proc 4 of build/rplgraph_best.c)
 
