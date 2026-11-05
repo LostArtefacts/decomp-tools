@@ -874,6 +874,7 @@ class ExeStatsLE(TypedDict):
 
 
 COMPILED = set(project.config.get("progress", {}).get("compiled", []))
+ASSEMBLERS = project.config.get("build", {}).get("file_assemblers", {})
 
 
 def generated(path: str) -> bool:
@@ -884,7 +885,9 @@ def generated(path: str) -> bool:
     assembly never is, or one with a `db` in a code segment, bytes the
     assembler was not given as instructions (asmgen's, or hand-written
     for what MASM cannot encode). A `db` in a data segment is data, as
-    anyone writes it."""
+    anyone writes it. A module build.file_assemblers gives to "gas" is
+    GNU as source, checked for its data directives in code instead
+    (raw_in_gas_code)."""
     module = os.path.splitext(os.path.basename(path))[0]
     source = os.path.join(ROOT, "src", module + ".asm")
     if not os.path.exists(source):
@@ -893,7 +896,44 @@ def generated(path: str) -> bool:
         return True
     with open(source, errors="replace") as f:
         text = f.read()
+    if ASSEMBLERS.get(module) == "gas":
+        return raw_in_gas_code(text)
     return (text.lstrip().startswith(".586p") and ".model" not in text) or db_in_code(text)
+
+
+GAS_DATA = (".byte", ".word", ".short", ".hword", ".value", ".2byte", ".long", ".int", ".4byte",
+            ".quad", ".8byte", ".octa", ".ascii", ".asciz", ".string", ".fill", ".space", ".skip",
+            ".zero", ".dc", ".incbin", ".float", ".single", ".double", ".inst")
+
+
+def raw_in_gas_code(text: str) -> bool:
+    """Whether GNU as source `text` has a data directive (`.byte`,
+    `.long`, `.fill` and the like) in a code section: `.text`, a
+    `.section` named `.text...` or with an `x` in its flags, followed
+    through `.pushsection`, `.popsection` and `.previous`."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    current, previous = True, True
+    stack: list[tuple[bool, bool]] = []
+    for line in text.splitlines():
+        for s in line.split("#")[0].split(";"):
+            s = re.sub(r"^\s*(?:[\w.$]+:\s*)*", "", s).strip()
+            low = s.lower()
+            word = low.split(None, 1)[0] if low else ""
+            m = re.match(r"\.(?:section|pushsection)\s+([^\s,]+)\s*(?:,\s*\"([^\"]*)\")?", low)
+            if m:
+                code = "x" in m.group(2) if m.group(2) is not None else m.group(1).startswith(".text")
+                if word == ".pushsection":
+                    stack.append((current, previous))
+                current, previous = code, current
+            elif word in (".text", ".data", ".bss"):
+                current, previous = word == ".text", current
+            elif word == ".popsection" and stack:
+                current, previous = stack.pop()
+            elif word == ".previous":
+                current, previous = previous, current
+            elif current and (word in GAS_DATA or word.startswith(".dc.")):
+                return True
+    return False
 
 
 def db_in_code(text: str) -> bool:
