@@ -12,7 +12,11 @@ from the --code addresses, and from any stretch nothing reaches that
 is not zeros or the assembler's alignment fill. The rest of the code
 range is data: dwords, words and bytes typed by the instructions that
 access them, `dword offset SYM` at fixups, and `align N` for runs of
-MASM's fill (90, 8b c0, 2e 8b c0) up to an aligned address.
+MASM's fill (90, 8b c0, 2e 8b c0) up to an aligned address. The data
+ranges are typed the same way where the code reads them, at fixups and
+in runs of zeros; the rest of them stays bytes and strings. A jump
+table read from a base before it (the table less its smallest index
+times 4) is written `[reg*4+TABLE-INDEXh*4]`.
 
 Labels keep the names --keep's module gives their addresses (read from
 its MASM listing), so a module renamed by hand can be regenerated; the
@@ -29,7 +33,7 @@ both encodings and nothing is written: the module stays a stand-in
 until it is solved by hand. The whole module is then checked as
 asmgen_le.py checks it.
 """
-import argparse, os, re, struct, subprocess, sys
+import argparse, atexit, os, re, shutil, struct, subprocess, sys
 
 import asmgen_le, omf, project
 from asmgen import BRANCH, disasm
@@ -37,6 +41,8 @@ from asmgen_le import SEGMENTS, parse_range
 from build_watcom import env, winpath
 
 ROOT = project.ROOT
+WORK = os.path.join(ROOT, "build", "asmclean", str(os.getpid()))
+atexit.register(shutil.rmtree, WORK, True)
 STOP = {"jmp", "ret", "retf", "retn", "iret", "iretd"}
 SIZES = {"byte": 1, "word": 2, "dword": 4, "fword": 6, "qword": 8, "tbyte": 10}
 TYPES = {1: "byte", 2: "word", 4: "dword"}
@@ -65,6 +71,7 @@ class Clean(asmgen_le.Module):
         """self.ins {address: (bytes, mnemonic, operands)} of the code and
         self.datarefs {address: access size} of the data the code reads."""
         self.ins, self.within, self.datarefs, self.tables = {}, {}, {}, set()
+        self.datarefs_out, self.data_tables, self.data_plain = {}, set(), set()
         self.spans = []
         code = self.range("code")
         if not code:
@@ -125,10 +132,14 @@ class Clean(asmgen_le.Module):
                 if BRANCH.match(mnem) and re.fullmatch(r"0x[0-9a-f]+", ops):
                     work.append(int(ops, 16))
                 for s in range(at, at + len(raw)):
-                    if s in self.fix and cs <= self.fix[s][0] < ce and "[" in ops:
+                    if s in self.fix and self.kind_of(self.fix[s][0]) and "[" in ops:
                         t = self.fix[s][0]
                         m = re.search(r"(\w+) PTR", ops)
                         size = SIZES.get(m[1].lower(), 0) if m and mnem != "lea" else 0
+                        if not cs <= t < ce:
+                            self.datarefs_out[t] = max(self.datarefs_out.get(t, 0), size)
+                            (self.data_tables if mnem in ("jmp", "call") else self.data_plain).add(t)
+                            continue
                         self.datarefs[t] = max(self.datarefs.get(t, 0), size)
                         if mnem in ("jmp", "call"):
                             self.tables.add(t)
@@ -137,15 +148,21 @@ class Clean(asmgen_le.Module):
             else:
                 return
 
+    def table_start(self, t):
+        """The first entry of the jump table an indexed jmp or call with
+        base t reads: t, or the first one after it, for a base inside
+        other code (the table less the smallest index)."""
+        s = t
+        while s - t < 1024 and (s in self.ins or s in self.within or s not in self.fix):
+            s += 4
+        return s
+
     def table_entries(self):
         """The fixups of the jump tables an indexed jmp or call reads,
-        each the run of code addresses from its base (or from the first
-        one after it, for a base inside other code)."""
+        each the run of code addresses from its start."""
         out = []
         for t in sorted(self.tables):
-            s = t
-            while s - t < 256 and (s in self.ins or s in self.within or s not in self.fix):
-                s += 4
+            s = self.table_start(t)
             while s in self.fix and s not in self.ins and s not in self.within:
                 out.append(s)
                 s += 4
@@ -176,8 +193,8 @@ class Clean(asmgen_le.Module):
 
     def pieces(self, a, b):
         """The gap a-b cut at labels, fixups and alignment fill."""
-        cuts = {a, b} | {x for x in range(a + 1, b) if x in self.datarefs or x in self.fix
-                         or x in getattr(self, "labels", {}) or x in self.kept}
+        cuts = {a, b} | {x for x in range(a + 1, b) if (x in self.datarefs or x in self.fix
+                         or x in getattr(self, "labels", {}) or x in self.kept) and self.fixup_at(x) is None}
         for x in range(a + 1, b + 1):
             if x % 4 == 0:
                 for k in range(min(15, x - a), 0, -1):
@@ -186,6 +203,11 @@ class Clean(asmgen_le.Module):
                         break
         cuts = sorted(cuts)
         return list(zip(cuts, cuts[1:]))
+
+    def fixup_at(self, x):
+        """The start of the fixup whose dword x is inside (not its first
+        byte), or None."""
+        return next((x - k for k in (1, 2, 3) if x - k in self.fix), None)
 
     def find_labels(self):
         labels = {}
@@ -200,16 +222,37 @@ class Clean(asmgen_le.Module):
         for at, (raw, mnem, ops) in self.ins.items():
             if BRANCH.match(mnem) and re.fullmatch(r"0x[0-9a-f]+", ops):
                 refs.add(int(ops, 16))
+        self.based = {}
+        for t in self.tables:
+            s = self.table_start(t)
+            if s != t and s in self.fix and t not in labels:
+                self.based[t] = s
+                refs = (refs - {t}) | {s}
+        for t in self.data_tables - self.data_plain:
+            s = next((s for s in range(t, t + 1024, 4) if s in self.fix), None)
+            if s is not None and s != t and t not in labels:
+                self.based[t] = s
+                refs = (refs - {t}) | {s}
         self.inside = {}
         for t in refs:
             if t in self.within and t not in labels:
                 self.inside[t] = self.within[t]
                 refs = refs | {self.within[t]}
+            elif t not in self.ins and t not in labels and self.kind_of(t) and self.fixup_at(t) is not None:
+                self.inside[t] = self.fixup_at(t)
+                refs = refs | {self.inside[t]}
         for t in refs:
             k = self.kind_of(t)
             if k and t not in labels and t not in self.inside:
                 labels[t] = f"{'L' if t in self.ins else 'B' if k == 'bss' else 'D'}{t:x}"
         return labels
+
+    def symbol(self, v, used):
+        if v in getattr(self, "based", {}) and v not in self.labels:
+            s = self.based[v]
+            n = f"{(s - v) // 4:x}h"
+            return f"{self.symbol(s, used)}-{'0' if n[0] > '9' else ''}{n}*4" if (s - v) % 4 == 0 else f"{self.symbol(s, used)}-{s - v}"
+        return super().symbol(v, used)
 
     def variants(self, at, used):
         raw, mnem, ops = self.ins[at]
@@ -271,6 +314,30 @@ class Clean(asmgen_le.Module):
         for i, (a, text) in enumerate(out):
             lines.append((a, f"{named} {text}" if i == 0 and named else f"    {text}"))
         return lines
+
+    def data(self, start, end, used, bss=False):
+        """The data range start-end, typed as data_lines types the data
+        in code where the code reads it, all-zero runs and the stretches
+        with fixups; the rest as asmgen_le.py writes it (strings)."""
+        if bss:
+            return super().data(start, end, used, bss)
+        refs = self.datarefs_out
+        cuts = sorted({start, end} | {a for a in self.labels if start < a < end}
+                      | {a for a in refs if start < a < end})
+        out = []
+        for a, b in zip(cuts, cuts[1:]):
+            name = self.labels.get(a)
+            if a in refs or any(s in self.fix for s in range(a, b)) or not any(self.read(a, b)):
+                saved, self.datarefs = self.datarefs, refs
+                try:
+                    out += [text for _, text in self.data_lines(a, b, used, name)]
+                finally:
+                    self.datarefs = saved
+            else:
+                if name:
+                    out.append(f"{name} label byte")
+                out.append(self.bytes_of(a, b, used))
+        return out
 
     def source(self):
         """(text, items): items [(line number, address, kind)] of the code."""
@@ -359,20 +426,24 @@ class Clean(asmgen_le.Module):
 
 def listing(path):
     """(offset or None, source line) of each line of ml's listing at path.
-    The source starts at column 32, or right after the offset of a line
-    whose label reaches past it."""
+    The source starts at column 32, right after the offset of a line
+    whose label reaches past it, or right after the bytes of a line ml
+    wrote without its tabs (it does that to a line now and then)."""
     for line in open(path, errors="replace"):
         line = line.rstrip("\r\n")
         m = re.match(r"^ ([0-9A-F]{8})(.*)$", line)
+        bare = m and "\t" not in line and re.match(r"^  [0-9A-F]{2,8}(?: [0-9A-F]{2,8})*( {2,}\S.*)$", m[2])
         if m and m[2] and not m[2][0].isspace():
             yield int(m[1], 16), m[2]
+        elif bare:
+            yield int(m[1], 16), bare[1]
         elif line.startswith("\t\t\t\t") or m:
             yield (int(m[1], 16) if m else None), line.expandtabs(8)[32:]
 
 
 def read_names(path, ranges):
     """{address: label} of the MASM module at path, from its listing."""
-    work = os.path.join(ROOT, "build", "asmclean")
+    work = WORK
     os.makedirs(work, exist_ok=True)
     lst = os.path.join(work, "keep.lst")
     r = subprocess.run(["wine", os.path.join(project.masm(), "ML.EXE"), *project.config["build"]["asflags"],
@@ -409,7 +480,7 @@ def read_names(path, ranges):
 
 def assemble(text):
     """(module, {line: offset}, errors) of the generated source."""
-    work = os.path.join(ROOT, "build", "asmclean")
+    work = WORK
     os.makedirs(work, exist_ok=True)
     src, obj, lst = (os.path.join(work, "gen" + x) for x in (".asm", ".obj", ".lst"))
     marked = "\n".join(f"{line} ;@{n}" if line.strip() else line for n, line in enumerate(text.split("\n"), 1))
