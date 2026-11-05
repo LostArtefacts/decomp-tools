@@ -70,6 +70,8 @@ DEFAULTS = {
         "lib": [r"C:\dx5\lib", r"C:\msvc5\lib"],
         "cflags": REQUIRED,
         "file_cflags": {},  # watcom: {stem = [flags]}, a src/ file's flags instead of cflags
+        "file_assemblers": {},  # watcom: {stem = "masm"|"wasm"}, default MASM
+        "wasmflags": ["-zq"],  # watcom: flags for modules assembled with WASM
         "encoding": "cp1252",  # what src/'s UTF-8 is converted to for cl
         "crlf": False,  # convert src/'s LF line endings to CRLF for cl
         "ml": r"C:\masm611\bin\ml.exe",  # the assembler for src/'s .s and .asm files

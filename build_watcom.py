@@ -1,5 +1,5 @@
 """Compiles src/*.c with Watcom C 10.6 and assembles src/*.asm with MASM
-6.11, both under Wine, into build/obj/.
+6.11 or Watcom WASM, under Wine, into build/obj/.
 
     build.py [FILE.c|FILE.asm...]
 
@@ -13,6 +13,9 @@ first in build.watcom that has one. MASM is the directory holding ML.EXE
 6.11; it defaults to the first in build.masm that has one. An object is
 rebuilt when its source or any header or include file in src/ is newer,
 or when its flags changed (build/obj/flags.json records them).
+build.file_assemblers selects "wasm" for individual assembly modules;
+the default is "masm". WASM uses build.wasmflags and BINNT/WASM.EXE
+from the Watcom installation.
 """
 import glob, json, os, subprocess, sys, tempfile
 
@@ -22,16 +25,29 @@ from project import ROOT, masm, watcom
 CFLAGS = project.config["build"]["cflags"]
 FILE_CFLAGS = project.config["build"]["file_cflags"]
 AFLAGS = project.config["build"]["asflags"]
+FILE_ASSEMBLERS = project.config["build"]["file_assemblers"]
+WASM_FLAGS = project.config["build"]["wasmflags"]
 
 
 def winpath(path):
     return "Z:" + os.path.abspath(path).replace("/", "\\")
 
 
-def cflags(src):
+def cflags(src: str) -> list[str]:
     """The wcc386 flags for the source file `src`: its build.file_cflags
     entry if it has one, else build.cflags."""
     return FILE_CFLAGS.get(os.path.splitext(os.path.basename(src))[0], CFLAGS)
+
+
+def assembler(src: str) -> str:
+    name = FILE_ASSEMBLERS.get(os.path.splitext(os.path.basename(src))[0], "masm")
+    if name not in ("masm", "wasm"):
+        sys.exit(f"error: unknown assembler {name!r} for {src}")
+    return name
+
+
+def asflags(src: str) -> list[str]:
+    return WASM_FLAGS if assembler(src) == "wasm" else AFLAGS
 
 
 def env(w):
@@ -55,10 +71,14 @@ def run(cmd, w, cwd=None):
         return code, f.read()
 
 
-def compile(w, src, obj):
+def compile(w: str, src: str, obj: str) -> None:
     if src.endswith(".asm"):
-        cmd = ["wine", os.path.join(masm(), "ML.EXE"), *AFLAGS, "/I" + winpath("src"),
-               "/Fo" + winpath(obj), winpath(src)]
+        if assembler(src) == "wasm":
+            cmd = ["wine", os.path.join(w, "BINNT", "WASM.EXE"), *asflags(src),
+                   "-i=" + winpath("src"), "-fo=" + winpath(obj), winpath(src)]
+        else:
+            cmd = ["wine", os.path.join(masm(), "ML.EXE"), *asflags(src), "/I" + winpath("src"),
+                   "/Fo" + winpath(obj), winpath(src)]
     else:
         cmd = ["wine", os.path.join(w, "BINNT", "WCC386.EXE"), *cflags(src),
                "-fo=" + winpath(obj), winpath(src)]
@@ -70,7 +90,7 @@ def compile(w, src, obj):
         print(out)
 
 
-def main():
+def main() -> None:
     os.chdir(ROOT)
     w = watcom()
     os.makedirs("build/obj", exist_ok=True)
@@ -87,6 +107,9 @@ def main():
     unknown = set(FILE_CFLAGS) - set(names)
     if unknown and not sys.argv[1:]:
         print(f"warning: build.file_cflags names no file in src/: {' '.join(sorted(unknown))}")
+    unknown = set(FILE_ASSEMBLERS) - set(names)
+    if unknown and not sys.argv[1:]:
+        print(f"warning: build.file_assemblers names no file in src/: {' '.join(sorted(unknown))}")
     record = "build/obj/flags.json"
     try:
         recorded = json.load(open(record))
@@ -96,7 +119,8 @@ def main():
     for src in srcs:
         stem = os.path.splitext(os.path.basename(src))[0]
         obj = os.path.join("build/obj", stem + ".obj")
-        flags = AFLAGS if src.endswith(".asm") else cflags(src)
+        flags = (["assembler=" + assembler(src), *asflags(src)]
+                 if src.endswith(".asm") else cflags(src))
         if os.path.exists(obj) and os.path.getmtime(obj) >= max(os.path.getmtime(src), headers) \
                 and recorded.get(stem, flags) == flags:
             recorded[stem] = flags
