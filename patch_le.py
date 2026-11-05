@@ -33,7 +33,9 @@ def patch(out):
             _, bases = compare.compare_module(mod, orig, by_symbol)
             where = {}
             for i, seg in enumerate(mod.segments[1:], 1):
-                if seg.is_code() and seg.publics and not any(n in by_symbol for _, n, _ in seg.publics):
+                if seg.cls in ("DEBSYM", "DEBTYP"):
+                    where[i] = None  # wcc386 -d2 debugging information, not part of the image
+                elif seg.is_code() and seg.publics and not any(n in by_symbol for _, n, _ in seg.publics):
                     where[i] = None  # code the original's link eliminated (link_le.py)
                 elif seg.is_code() or i not in bases:
                     blob += bytes(-len(blob) % 16)

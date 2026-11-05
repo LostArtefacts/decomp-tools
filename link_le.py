@@ -193,8 +193,9 @@ def place_modules(orig):
         # library extract is rewritten on every run. Code something
         # calls was not eliminated; it is an error below.
         gone = {i for i, s in enumerate(mod.segments)
-                if s and s.size and i not in bases and s.is_code()
-                and not any(name in used for _, name, _ in s.publics)}
+                if s and s.size and i not in bases
+                and (s.cls in ("DEBSYM", "DEBTYP")  # wcc386 -d2 debugging information
+                     or s.is_code() and not any(name in used for _, name, _ in s.publics))}
         if gone:
             with open(path, "rb") as f:
                 raw = omf.empty_segments(f.read(), gone)
