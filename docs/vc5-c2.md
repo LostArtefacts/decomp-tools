@@ -748,6 +748,11 @@ Plain-diff triage of every red; these shapes landed:
   the file's later functions (phd_RotateLight flipped and came back with
   one declaration move).
 
+- ins_poly_trans8's 8-way clip AND/OR order follows the IDs of the
+  vn1..vn8 locals: `permute.py --decls --limit 8000` (about 40 min) found
+  `int npoints; VERTEX_INFO *v; PHD_VBUF *vn1, *vn5, *vn3, *vn2, *vn7,
+  *vn4, *vn8, *vn6;` (113 -> 48 exe bytes). The full 8! is not searched.
+
 Triage of the rest (not landed):
 
 - InsertGT3_ZBuffered, InsertGT4_ZBuffered, InsertGT3_Sorted: the
