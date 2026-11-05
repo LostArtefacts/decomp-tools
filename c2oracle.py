@@ -30,7 +30,9 @@ With no option it shows all of them. Output lines name symbols as
 references as `[base+offset]`; opN is a c2 opcode. A run takes about
 15 seconds; set C2O_DEBUG=1 to see gdb's own output. --raw adds the node addresses and
 raw words, and under each pick the value record, its preferred register on
-entry and its interference index. The rules behind all of this, with the C2.EXE addresses, are
+entry and its interference index; under --sort it also prints every node
+below each sorted operand with its key, following a temp into the
+expression it holds. The rules behind all of this, with the C2.EXE addresses, are
 in docs/vc5-c2.md.
 
 Needs gdb and winedbg (wine's) on the PATH. The stand-in is compiled

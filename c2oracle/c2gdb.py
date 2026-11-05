@@ -155,6 +155,25 @@ def after_sort():
     out("sort %s  (key %s)" % (opname(rd(parent + 4) & 0xFFFF), key(parent)))
     for k in kids:
         out("    %s  %s" % (key(k), describe(k)))
+        if RAW:
+            tree(k, 3)
+
+
+def tree(node, indent, depth=0):
+    """--raw: every node under NODE with its key, through temps' defining trees."""
+    if depth > 6:
+        return
+    cls = rd(node + 8) & 0xFF
+    kids = []
+    if cls >= 11:
+        kids = list(children(node))
+    elif cls in (5, 6) and rd(node + 0x24):
+        kids = [rd(node + 0x24)]
+    elif cls in (1, 2) and rd(node + 0x14) and rd(rd(node + 0x14) + 0x14):
+        kids = [rd(rd(node + 0x14) + 0x14)]
+    for k in kids:
+        out("%s%s  op %x cls %d  %s" % (" " * (2 * indent), key(k), rd(k + 4) & 0xFFFF, rd(k + 8) & 0xFF, describe(k, 3)))
+        tree(k, indent + 1, depth + 1)
 
 
 REGS = {1: "eax", 2: "ecx", 3: "edx", 4: "ebx", 5: "esp", 6: "ebp", 7: "esi", 8: "edi"}

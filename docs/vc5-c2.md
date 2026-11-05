@@ -54,7 +54,10 @@ Classes, as the hash routine 0x4053bf switches on them (table 0x405528):
 | 9-10 | | 0 |
 | 11-20 | operators, operands from +0x18 | opcode ^ XOR of the operands' hash16 |
 
-fold16(x) = (x & 0xffff) ^ (x >> 16). A back end symbol's front end
+fold16(x) = (x & 0xffff) ^ (x >> 16). A class 1 or 2 node whose
+symbol has a defining tree (symbol +0x14, a temp the optimiser made for
+an expression) hashes as that tree (0x405473 -> 0x465ed9), not by its
+slot. A back end symbol's front end
 symbol is `[[sym+8]]`; it holds the name at +0x18 and the ID at +0x28.
 
 ## Commutative operand sort (0x40516b, 0x405301, 0x40922a, 0x408d58)
@@ -153,7 +156,71 @@ fmul/fadd/fchs), ties keep source order; of two consumers of a shared
 value the first placed gets `fld st(0)`; a Pentium post-pass hoists long
 fdivs and patches with fxch.
 
+Where to start reading C2.EXE:
+
+- 0x49a69c: the listing's mnemonic table (pointers to names), indexed by
+  c2's internal instruction opcode, which an instruction keeps in its
+  byte +0x30: fadd..fdivr 0x3a-0x3f, faddp..fdivrp 0x40-0x45, fxch 0x54,
+  fld 0x55, fst 0x57, fstp 0x58, fchs 0x6c.
+- 0x456d68 builds an fxch (stores 0x54 at +0x30), in the post-pass that
+  fixes the stack after it moves instructions; 0x425525 and the compares
+  around 0x433d3f, 0x433eac, 0x434648 and 0x46f16c test for one.
+
+What decides the order of two equal chains (the four `(a->xs - b->xs)`
+style factors of a 2D cross product, as in the hwinsert routines):
+
+- /Os emits the commutative sort's operand order as it is. Under /O2 the
+  scheduler reorders the factors of each product, and the result is not
+  a function of the sort keys: in a test file, 0 and 8 extra
+  declarations before the function give the same sorted lists but
+  different load orders.
+- In that test the order changes with the number of declarations before
+  the function, in runs of about six (0-1, 2-7, 8-13, 14-19, ...), and
+  not with the length of any name. The three orders seen were B A C D,
+  A B D C and A B C D (A, B the factors of the first product).
+- In hwinsert.cpp neither InsertGT3_ZBuffered nor InsertGT4_ZBuffered
+  changes its order for 0-95 extra declarations, so the input that
+  decides is not only the IDs. Every cast and negation form of the factors
+  tried (`-(b - a)`, `(-b + a)`, `(double)` on the factor or not, the
+  products swapped, `-(c*d) + a*b`) compiles to the same code; `(double)`
+  on the separate operands changes the whole function's operand keys.
+
+## Symbol IDs that are easy to miss
+
+Measured with `c2oracle.py --sort` (it prints `name#ID`):
+
+- An `if (c) {} else return;` costs one ID more than `if (!c) return;`
+  (with an empty statement in place of `{}` too), so the else's label is
+  a symbol. Taking an `else` away after a branch that ends in `return`
+  saves one.
+- A repeated prototype costs two IDs, with or without parameter names;
+  deleting a repeat saves two.
+- A prototype's named parameters count, so moving a prototype moves
+  them with it.
+
+## Branch layout
+
+After a call whose result is tested for a return, `if (!n) return;`
+compiles to `je <shared epilogue>; jmp <join>` when the code that follows
+is an else branch, while `if (n) {} else return;` gives `jne <join>`
+followed by a copy of the epilogue. InsertGT3_ZBuffered needs the second.
+
 ## Case notes
+
+- InsertGT4_ZBuffered and InsertGT3_ZBuffered (hwinsert.cpp): the clip
+  `&`/`|` chains are sorted by the parameters' IDs (memory references
+  hash as offset ^ opcode ^ ID). GT4 needs its parameter IDs one higher
+  than the old layout or another odd shift (1, 3, 9, 11, 13, ...); GT3
+  needs 12 or 13 (mod 8 = 4 or 5). Both are done by moving real
+  declarations (a9d2ba3, d482039). What is left is the cross product's
+  load order (6 and 12 bytes), see x87 scheduling.
+- S_DrawSprite and draw_scaled_spriteC (scalespr.cpp) are not x87:
+  S_DrawSprite differs in integer matrix term order, register choice and
+  block order (the `else if (x | y | z)` branch is inverted in the
+  target; swapping the branches fixes the jump but not the rest);
+  draw_scaled_spriteC has a frame four bytes bigger in the target (one
+  more stack slot) and different registers. Neither reacts to 0-63
+  extra declarations.
 
 - Func4524e0 (setup.cpp): the GUID lea's take eax by preference (path 1);
   then `settings->RenderMode` takes eax by round robin, so
