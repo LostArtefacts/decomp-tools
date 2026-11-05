@@ -1,6 +1,6 @@
 """Shows the decisions VC5's back end (C2.EXE) makes for one function.
 
-    c2oracle.py SRC NAME [--sort] [--regs] [--x87] [--raw]
+    c2oracle.py SRC NAME [--sort] [--regs] [--global] [--inline] [--x87] [--raw]
 
 SRC is a file in src/ and NAME a function it defines. The file is
 compiled as build.py compiles it (its flags, the CRLF copy in build/src),
@@ -22,6 +22,13 @@ the things a red function usually gets wrong, and prints them for NAME:
           first free, evicted). "-- rotation reset" marks the function
           start. Values the global allocator keeps in esi/edi/ebx/ebp
           are not shown yet.
+  --global  the global allocator (P2\color.c): each live range in the
+          order it is colored, with its priority, tie-break position,
+          reference count, weighted references, and the register it
+          got (or a note that it was split). With --raw, also every
+          block with its loop multiplier and each range's priority
+          change there (referenced: + multiplier * ranges * weights;
+          live through: - multiplier * ranges).
   --x87   reserved for the x87 scheduler (not reversed yet; prints
           nothing).
   --inline  the inliner: the caller's size and budget, then each inline
@@ -159,9 +166,11 @@ def main():
     ap.add_argument("--regs", action="store_true")
     ap.add_argument("--x87", action="store_true")
     ap.add_argument("--inline", action="store_true")
+    ap.add_argument("--global", dest="glob", action="store_true")
     ap.add_argument("--raw", action="store_true")
     a = ap.parse_args()
-    what = [w for w in ("sort", "regs", "x87", "inline") if getattr(a, w)] or ["sort", "regs", "x87"]
+    what = [w for w in ("sort", "regs", "x87", "inline") if getattr(a, w)]
+    what = (what + ["global"] if a.glob else what) or ["sort", "regs", "x87"]
     keep = os.path.join(WORK, "keep")
     flags = front_end(a.src, keep)
     for line in back_end(flags, a.name, what, a.raw, keep):

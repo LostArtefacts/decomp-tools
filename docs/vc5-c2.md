@@ -144,9 +144,104 @@ Where the picker is called from, and the exact path 1 conditions:
   and the index under each pick.
 
 Which values live in callee-saved registers (esi/edi/ebx/ebp for whole
-ranges) is decided by the global allocator, not this picker; it walks
-the same table from 0x491104 (lines using 0x491100/0x491104 around
-0x43xxxx, 0x45xxxx, 0x46xxxx, 0x47xxxx); not reversed yet.
+ranges) is decided by the global allocator below, not this picker.
+
+## The global allocator (P2\color.c, reversed 2026-11-05)
+
+C2.EXE names its sources in assert stubs: `P2\color.c` (0x49dfb4, stubs
+at 0x4676b2.., 0x469159.., returning into 0x40ed04, 0x41a9bb, 0x41b1cc,
+0x41c35c) is the global allocator, `P2\regasg.c` (0x49ddcc, 0x46f321,
+0x4784e8) the local one, `P2\stack.c` (0x49e12c, 0x470315 -> 0x43f9a1)
+the frame layout. It is a priority-based colorer in the Chow-Hennessy
+style, not a Chaitin simplify/select: every live range gets a priority,
+the ranges are colored one at a time, highest first, and a range that
+doesn't fit is split or left in memory.
+
+Driver 0x416e6a (once per function): the regions ("tiles", levels in
+the array at 0x494244) are handled innermost first. For each round:
+
+1. 0x40ee1d (body 0x40ee.. - 0x40f77a) walks the blocks and computes the
+   priorities (below).
+2. 0x438f32 builds the work list 0x4910d4 with 0x41b6fa, an insertion
+   sort: descending by priority (+0xc); equal priorities descending by
+   the position (+0x40); a range equal in both goes before the ones
+   already in the list.
+3. The loop at 0x4171e4 takes the head of the list: 0x41a985 colors it
+   (returns the ranges it had to split, if any), 0x41b785 and 0x41ba2b
+   commit the register (+0x10). A split puts the pieces back in the list
+   and the driver goes back to step 1 (0x416f7c), so a function can show
+   several rounds with changed priorities.
+4. Then 0x41beb8 runs top down over the levels, and 0x42aadd finishes.
+
+The live range record (0x44 bytes): +0 the back end symbol (a variable,
+a parameter, or a compiler temp), +4 flags (0x1000000 set on a range
+that was split), +0xc priority, +0x10 the register, as a pointer
+0x494758 + 0x50 * reg into the per register table 0x494750 (whose +0xd
+byte has flag 0x10 and +0x3c a cost; 0x42b204 sets that cost to
+0x1000000 for eax/ecx/edx and 0 for esi/edi/ebx/ebp), +0x18 the sum of
+the reference weights in the current block, +0x1c the range's index in
+the bit sets, +0x24 the number of references, +0x3c the weighted
+references (sum of multiplier * weight), +0x40 the position.
+
+The candidate set: every live range of a variable, parameter or temp
+the optimiser kept as a register candidate. Not every range reaches
+0x41a985: the driver takes a range with weighted references (+0x3c) at
+or below zero down another path (0x417213), and in the nested loop test
+a variable with a positive priority in the first round was never
+colored and lived in memory, so the cut-off is not just the sign of
+the priority. Ranges that don't appear in `--global` live in memory.
+
+The priority (0x40f5bb .. 0x40f75d, per block, after the block's
+references were counted at 0x40f237 / 0x40f468):
+
+- m(B) = 1 << (loop depth + 1), depth -1 outside loops: 1 outside any
+  loop, 4 in a loop, 8 in a loop inside it, 16 one deeper (0x40f6cf).
+- N(B) = the number of distinct ranges referenced in block B (0x40f5c9:
+  the popcount of the block's set, plus the ranges in its lists).
+- w(ref) from 0x40fada: 2 for most references; 0 seen for the write of
+  a read-modify-write in a loop (`a += g(b)`: the read gave 2, the write
+  0). Not checked further.
+- For every range live in B: if it is referenced there, priority +=
+  m(B) * N(B) * (sum of its w in B); if it is only live through B,
+  priority -= m(B) * N(B).
+
+So a variable used in a busy block (many other ranges referenced next
+to it) gets more for the same use, and a variable that is live across
+a loop where it is not used pays for every block of that loop, scaled
+by how busy the block is. In a test, `a` used once in an outer loop and
+live across an inner loop of three ranges lost 24 there and went to the
+stack.
+
+The position (+0x40, the tie-break) is written at 0x416ad3 by the walk
+0x416a8d: blocks in their list order, the instructions of each block
+from last to first, one count per instruction (0x416c2f); each time a
+range starts (its +0x34 is 0) it takes the current count, so the final
+value comes from the last block that defines it. With equal priority
+the range with the higher position is colored first, which within one
+block is the one whose definition comes EARLIER in the source. In a
+test, `a += g(b); b += g(c) + a; c ^= g(d);` in a loop gave a, b, c the
+same priority 102 and positions 23, 17, 13: esi, edi, ebx in that order.
+
+The register: the first in the preference table eax ecx edx esi edi
+ebx ebp that the range does not conflict with; a range live across a
+call conflicts with eax/ecx/edx, so the callee-saved ones go out in the
+order esi, edi, ebx, ebp to the ranges in priority order.
+
+What it means for source: which value gets esi is the highest
+priority range that lives across a call or a clobber; to move a value
+up, give it more references in busy blocks, or take away the blocks it
+is live through unused (shorter live range, a loop that doesn't carry
+it). Statement order of independent loads doesn't matter (the
+optimiser reorders them; all 24 orders of draw_scaled_spriteC's four
+`inptr[k]` loads compile the same). `c2oracle.py SRC NAME --global`
+prints each range in coloring order with its priority, position,
+references and register; `--raw` adds every block's multiplier and each
+range's contribution.
+
+Not reversed yet: the frame (stack.c, around 0x43f9a1): which spilled
+ranges share a slot, and when a dead parameter's home is reused (the
+target's draw_scaled_spriteC keeps x2 and later the loop counter in
+inptr's slot and has one more slot than ours).
 
 ## x87 scheduling
 

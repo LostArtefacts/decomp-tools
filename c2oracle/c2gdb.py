@@ -275,6 +275,66 @@ def inl_used():
     out("%s  -> they used %d, budget now %d" % (ind(), used, fr(0x48) - used))
 
 
+# The global allocator (P2\color.c): priority-based coloring of live
+# ranges. A live range record: +0 back end symbol, +4 flags, +0xc
+# priority, +0x10 register (&regtab[r] + 8, regtab = 0x494750, 0x50 per
+# register), +0x24 references, +0x3c weighted references, +0x40 the walk
+# position that breaks priority ties. See docs/vc5-c2.md.
+GREGS = {1: "eax", 2: "ecx", 3: "edx", 4: "ebx", 5: "esp", 6: "ebp", 7: "esi", 8: "edi"}
+
+
+def range_name(rng):
+    try:
+        sym = rd(rng)
+        return symbol(sym) if sym else "?"
+    except gdb.error:
+        return "range@%x" % rng
+
+
+def range_reg(rng):
+    p = rd(rng + 0x10)
+    if not p:
+        return "memory"
+    return GREGS.get((p - 0x494758) // 0x50, "?%x" % p)
+
+
+def glob_block():
+    # 0x40f6de: a block's references were counted, about to fold them into
+    # the priorities; the multiplier is 1 << (loop depth + 1)
+    blk = rd(reg("esp") + 0x20)
+    out("  block %x: depth %d, multiplier %d" % (blk, sx16(rd(blk + 0x86, 2)), reg("edi")))
+
+
+def glob_use():
+    rng = reg("eax")
+    out("    %s referenced: %d + %d * %d" % (range_name(rng), sx32(rd(rng + 0xC)), reg("edx"), rd(rng + 0x18)))
+
+
+def glob_thru():
+    rng = reg("eax")
+    out("    %s live through: %d - %d" % (range_name(rng), sx32(rd(rng + 0xC)), reg("edx")))
+
+
+def glob_color():
+    rng = reg("edx")
+    glob_color.cur = rng
+    out("%-24s priority %6d  position %4d  refs %3d  weighted %5d" % (
+        range_name(rng), sx32(rd(rng + 0xC)), rd(rng + 0x40), rd(rng + 0x24), sx32(rd(rng + 0x3C))))
+
+
+def glob_split():
+    if reg("eax"):
+        out("    (split: the ranges it conflicts with get pieces)")
+
+
+def glob_assigned():
+    out("    -> %s" % range_reg(reg("esi")))
+
+
+def sx32(v):
+    return v - (1 << 32) if v >> 31 else v
+
+
 def main():
     global inf
     gdb.execute("set pagination off")
@@ -297,6 +357,15 @@ def main():
         Stop(0x424F79, inl_take)
         Stop(0x424BF5, inl_child)
         Stop(0x424C10, inl_used)
+    if "global" in WHAT:
+        Stop(0x41A985, glob_color)
+        Stop(0x4171C8, glob_split)
+        Stop(0x4171E2, glob_assigned)
+        if RAW:
+            Stop(0x40F6DE, glob_block)
+            Stop(0x40F70F, glob_use)
+            Stop(0x40F745, glob_use)
+            Stop(0x40F72C, glob_thru)
     print("== %s" % FUNC)
     gdb.execute("continue")
 
