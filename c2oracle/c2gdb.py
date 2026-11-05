@@ -335,6 +335,39 @@ def sx32(v):
     return v - (1 << 32) if v >> 31 else v
 
 
+# The list scheduler (P2\x86\schedmd.c, driver 0x40d9be). 0x49321c is 1
+# in the pre-pass (before register allocation), 0 in the post-pass. A DAG
+# node: +0x10/+0x14 ready list links, +0x1c the tuple, +0x2c priority,
+# +0x30 earliest cycle, +0x36 the tuple's position in the IL block.
+# A tuple is an expression node: +4 opcode, operands from +0x18.
+SCHED = {}
+
+
+def sched_tuple(t):
+    try:
+        return "op%x(%s)" % (rd(t + 4) & 0xFFFF, ", ".join(describe(k, 1) for k in children(t)))
+    except gdb.MemoryError:
+        return "op%x(?)" % (rd(t + 4) & 0xFFFF)
+
+
+def sched_took():
+    if rd(0x49321C) != 1:
+        return
+    for j in range(max(0, min(reg("eax"), 4))):
+        n = rd(0x4930B0 + 4 * j)
+        SCHED[rd(n + 0x36, 2)] = (len(SCHED) + 1, rd(n + 0x2C), sched_tuple(rd(n + 0x1C)))
+
+
+def sched_region():
+    if not SCHED:
+        return
+    out("-- pre-pass block, in IL order: IL position, scheduled position, priority, tuple")
+    for s in sorted(SCHED):
+        k, prio, text = SCHED[s]
+        out("  %3d -> %3d  %8d  %s" % (s, k, prio, text if len(text) < 160 else text[:157] + "..."))
+    SCHED.clear()
+
+
 def main():
     global inf
     gdb.execute("set pagination off")
@@ -357,6 +390,9 @@ def main():
         Stop(0x424F79, inl_take)
         Stop(0x424BF5, inl_child)
         Stop(0x424C10, inl_used)
+    if "x87" in WHAT:
+        Stop(0x4316CA, sched_took)
+        Stop(0x40DA6A, sched_region)
     if "global" in WHAT:
         Stop(0x41A985, glob_color)
         Stop(0x4171C8, glob_split)

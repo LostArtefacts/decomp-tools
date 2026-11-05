@@ -243,42 +243,79 @@ ranges share a slot, and when a dead parameter's home is reused (the
 target's draw_scaled_spriteC keeps x2 and later the loop counter in
 inptr's slot and has one more slot than ours).
 
-## x87 scheduling
+## x87 scheduling (pre-pass reversed 2026-11-05, agent 13)
 
-Not reversed yet. From test compiles: a pre-pass (only /O2 or /Ot)
-orders FPU ops by the longest latency path to the block end (fdiv >>
-fmul/fadd/fchs), ties keep source order; of two consumers of a shared
-value the first placed gets `fld st(0)`; a Pentium post-pass hoists long
-fdivs and patches with fxch.
+The scheduler is P2\x86\schedmd.c, a list scheduler, driver 0x40d9be.
+The pass driver calls it twice per function: 0x4535dc with edx = 1 (the
+pre-pass, before the global allocator 0x416e6a and the local one
+0x42a8aa) and 0x45373b with edx = 0 (the post-pass, on machine
+instructions, where 0x456d68 patches the stack with fxch). 0x49321c
+holds the pass. Per block (0x40da53): 0x431ec0 builds the DAG, 0x430b4c
+sets the priorities, 0x4315f1 schedules.
 
-Where to start reading C2.EXE:
+- A DAG node: +0x10/+0x14 ready list links, +0x1c the tuple (an
+  expression node: +4 opcode, operands from +0x18), +0x20 predecessors
+  left, +0x2c priority, +0x30 earliest cycle, +0x36 the tuple's position
+  in the IL block.
+- Ready list 0x493134, insertion 0x43170c: priority descending, then IL
+  position ascending. The cycle picker 0x43179a walks it from the head
+  and takes up to two (U/V pairing via the hook 0x493074, 0x431b0c, and
+  the register check 0x431b6a when round robin is on); the taken nodes
+  are in 0x4930b0, their count in eax at 0x4316ca.
+- Priority: the path length to the block end, in units of 0x1000 (the
+  loads of a cross product 0x36000, the subtractions 0x32000, the
+  multiplies 0x20000, the final subtract 0x18000 in the test below).
 
-- 0x49a69c: the listing's mnemonic table (pointers to names), indexed by
-  c2's internal instruction opcode, which an instruction keeps in its
-  byte +0x30: fadd..fdivr 0x3a-0x3f, faddp..fdivrp 0x40-0x45, fxch 0x54,
-  fld 0x55, fst 0x57, fstp 0x58, fchs 0x6c.
-- 0x456d68 builds an fxch (stores 0x54 at +0x30), in the post-pass that
-  fixes the stack after it moves instructions; 0x425525 and the compares
-  around 0x433d3f, 0x433eac, 0x434648 and 0x46f16c test for one.
+So the pre-pass never reorders two loads of equal height: of the four
+factor loads of a cross product, which comes first is the IL order, and
+that is the order the tuple generator walked the tree after the LATER
+commutative sort (the one c2 runs again after CSE, printed further down
+by `--sort` for the same statement). The first-pass lists can agree while
+the later ones do not, which is why earlier tests saw "same sorted
+lists, different load orders".
 
-What decides the order of two equal chains (the four `(a->xs - b->xs)`
-style factors of a 2D cross product, as in the hwinsert routines):
+In the later pass the factors `(double)(a->xs - b->xs)` are temps whose
+key is their definition's: and(op138(op142(load, load))), hash16 =
+C ^ hash(load a) ^ hash(load b), C a constant (0x14f in hwinsert.cpp).
+A load hashes as fold16(offset) ^ 0x122 ^ hash(base):
 
-- /Os emits the commutative sort's operand order as it is. Under /O2 the
-  scheduler reorders the factors of each product, and the result is not
-  a function of the sort keys: in a test file, 0 and 8 extra
-  declarations before the function give the same sorted lists but
-  different load orders.
-- In that test the order changes with the number of declarations before
-  the function, in runs of about six (0-1, 2-7, 8-13, 14-19, ...), and
-  not with the length of any name. The three orders seen were B A C D,
-  A B D C and A B C D (A, B the factors of the first product).
-- In hwinsert.cpp neither InsertGT3_ZBuffered nor InsertGT4_ZBuffered
-  changes its order for 0-95 extra declarations, so the input that
-  decides is not only the IDs. Every cast and negation form of the factors
-  tried (`-(b - a)`, `(-b + a)`, `(double)` on the factor or not, the
-  products swapped, `-(c*d) + a*b`) compiles to the same code; `(double)`
-  on the separate operands changes the whole function's operand keys.
+- If the base is the parameter itself (mx/p0.c), the IDs decide:
+  fold16(ID(v3)) ^ fold16(ID(v2)) ^ the offsets against the other
+  factor's. Declarations before the function change it (p0 vs p8).
+- If the fields' addresses are CSE temps (hwinsert.cpp's
+  InsertGT3_ZBuffered, every field used in both branches), the base
+  hashes as the address temp's slot, so the key is C ^ slot(&a->f) ^
+  slot(&b->f) and IDs do not enter at all (hence flat pad sweeps).
+  Those temps are made per vertex in source order, 31 slots apart, and
+  within a vertex in the clipped branch's copy order (v1: ooz 632, xs
+  635, ys 638; v2 at +31, v3 at +62),
+  so ours puts v1y before v3x and v1x before v3y. The target's order
+  (v3x v1y v3y v1x) follows if v3's group came before v1's, or if all
+  of them moved by +38..+60 or -30..-57 slots (computed from the keys;
+  not checked in gdb). Slot numbers come from c2's temp pool history
+  (see Commutative operand sort): a source change before the cross
+  product that allocates one or two more 32-entry chunks, or frees
+  slots that are then reused, is what would move them.
+
+In a micro test (a13/m/gen.py), a statement BEFORE the cross product
+that reads the six fields in a vertex order of 1 3 2 or 2 3 1 gives the
+target's order; 1 2 3, 2 1 3, 3 1 2 and 3 2 1 give ours. Reads after it
+change nothing.
+
+Integer code (SkidooControl) had no pre-pass picks in its blocks, so its
+order is the tuple generator's alone (see SkidooControl at the end of
+"IDs moved for one function only").
+
+`c2oracle.py SRC NAME --x87` prints each pre-pass block's tuples in IL
+order, with the scheduled position and the priority of each.
+
+Older notes: of two consumers of a shared value the first placed gets
+`fld st(0)`; the post-pass hoists long fdivs and patches with fxch. The
+listing's mnemonic table is 0x49a69c, indexed by the machine
+instruction's byte +0x30 (fadd..fdivr 0x3a-0x3f, faddp..fdivrp
+0x40-0x45, fxch 0x54, fld 0x55, fst 0x57, fstp 0x58, fchs 0x6c);
+0x425525 and the compares around 0x433d3f, 0x433eac, 0x434648 and
+0x46f16c test for an fxch.
 
 ## Symbol IDs that are easy to miss
 
@@ -887,3 +924,23 @@ row tail into the for clause, the inner increments into its clause,
 dropping `line` (much worse) and swapping the increments are all flat
 or worse. What would move it: two fewer ranges referenced in the row
 header (u -16, pixptr +16 over both loops).
+
+SkidooControl, traced further (agent 13). The listing (c2 -Fa) has the
+same order as the object, and -G3 gives the same code, so the order is
+the tuple generator's, then the global allocator: `--global` shows
+lara_item (position 300) and anims (297) both at priority 16, so
+lara_item is colored first and takes eax, anims ecx. In the target
+lara_item is in ecx because its load comes BEFORE the movsx that ends
+the anim_number temp in ax (the two conflict), and anims after it (no
+conflict: eax). Our tuples load anims, then the skidoo index, then
+lara_item, then the lara index; the target's local picks (lara index
+edx, skidoo index then edi as first free) say it built the lara index
+before the skidoo index. In the later commutative sort the SUB's
+operands are A = [anims + skidoo_index*32 + 16] (key 01.02.5762) and
+B = [anims + [lara_item+20]*32 + 16] (01.02.0099): equal rank and
+count, and our generator walks A first. Not found yet: the rule that
+picks which operand of a non-commutative op (op142) is generated first;
+the place to look is the tuple generator that consumes these sorted
+trees (P2\x86\code.c or lower.c). 'ex' (index written out) makes A's
+index contain lara_item, which is why it flips.
+

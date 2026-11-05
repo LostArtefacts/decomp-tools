@@ -29,8 +29,13 @@ the things a red function usually gets wrong, and prints them for NAME:
           block with its loop multiplier and each range's priority
           change there (referenced: + multiplier * ranges * weights;
           live through: - multiplier * ranges).
-  --x87   reserved for the x87 scheduler (not reversed yet; prints
-          nothing).
+  --x87   the scheduler's pre-pass (it runs on blocks with x87 code,
+          before register allocation): for each block, its tuples in
+          IL order with the position the scheduler gave each one and
+          its priority. Equal priorities keep IL order, so when two
+          loads come out in the wrong order, the IL already had them
+          that way: look at the commutative sort of the pass that
+          made the IL (`--sort`, the later lists for the same tree).
   --inline  the inliner: the caller's size and budget, then each inline
           candidate call site in the order c2 visits it, with the
           callee's size, the depth against the site's inline_depth
