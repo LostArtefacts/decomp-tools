@@ -105,35 +105,6 @@ def write_atomic(path, data):
     os.replace(tmp, path)
 
 
-class Omf:
-    """Writes a 32-bit OMF object module."""
-
-    def __init__(self, name):
-        self.recs = []
-        self.lnames = [None]
-        self.rec(0x80, self.str(name))
-
-    @staticmethod
-    def str(s):
-        b = s.encode()
-        return bytes([len(b)]) + b
-
-    @staticmethod
-    def idx(i):
-        return bytes([i]) if i < 0x80 else bytes([0x80 | i >> 8, i & 0xFF])
-
-    def rec(self, typ, body):
-        self.recs.append(bytes([typ]) + struct.pack("<H", len(body) + 1) + body + b"\0")
-
-    def lname(self, s):
-        if s not in self.lnames:
-            self.lnames.append(s)
-        return self.lnames.index(s)
-
-    def bytes(self):
-        return b"".join(self.recs)
-
-
 class Piece:
     """A stretch of the original no module provides."""
 
@@ -719,7 +690,7 @@ def wlink(order, start, stack, stub, blobs):
 
 
 def write_blob(name, ps, images, piece_fix, target):
-    o = Omf(name)
+    o = omf.Writer(name)
     segs = []  # (piece, index)
     lnames = []
     for p in ps:

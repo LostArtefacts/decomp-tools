@@ -1,4 +1,4 @@
-"""Reads Watcom OMF object files and libraries.
+"""Reads Watcom OMF object files and libraries; Writer writes one.
 
     omf.py dump FILE.OBJ|FILE.LIB
 
@@ -221,6 +221,38 @@ class Reader:
         for _ in range(blocks):
             out += self.iterated()
         return out * count
+
+
+class Writer:
+    """Writes a 32-bit OMF object module: rec() appends a record (with
+    a zero checksum), str() and idx() encode a name and an index, and
+    lname() adds a name to the LNAMES the module will have, returning
+    its index."""
+
+    def __init__(self, name: str) -> None:
+        self.recs: list[bytes] = []
+        self.lnames: list[str | None] = [None]
+        self.rec(0x80, self.str(name))
+
+    @staticmethod
+    def str(s: str) -> bytes:
+        b = s.encode()
+        return bytes([len(b)]) + b
+
+    @staticmethod
+    def idx(i: int) -> bytes:
+        return bytes([i]) if i < 0x80 else bytes([0x80 | i >> 8, i & 0xFF])
+
+    def rec(self, typ: int, body: bytes) -> None:
+        self.recs.append(bytes([typ]) + struct.pack("<H", len(body) + 1) + body + b"\0")
+
+    def lname(self, s: str) -> int:
+        if s not in self.lnames:
+            self.lnames.append(s)
+        return self.lnames.index(s)
+
+    def bytes(self) -> bytes:
+        return b"".join(self.recs)
 
 
 def members(path):
