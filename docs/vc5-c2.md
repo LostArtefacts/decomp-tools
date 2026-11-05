@@ -714,6 +714,67 @@ slot inside the loop (not colored), so i cannot share it; ours keeps
 dqptr in eax in that loop. So the slot difference follows from the
 coloring, and it is the coloring that has to change.
 
+## Loop and flag shapes (2026-11-05, agent 10)
+
+Plain-diff triage of every red; these shapes landed:
+
+- `lea r,[eax]` where ours has `mov r,eax` is a countdown loop written
+  with the decrement in the test: `for (j = width; j--;)` (AddTexturePage16's
+  inner loop, as InsertClippedPoly_Textured before it). `for (j = n; j; j--)`,
+  `j != 0` and up-counting forms give `mov`.
+- A separate counter where the target copies the count (`mov edx,edi`) and
+  then reuses the count's register: `for (dest = PhdVBuf, i = numvert; i--;
+  dest++)` in calc_vertice_light. A loop on a negative count with no entry
+  test after the `if (numvert < 0)` is `for (; numvert < 0; numvert++)`, not
+  `numvert = -numvert; for (; numvert > 0; numvert--)` (c2 drops the
+  repeated test itself). Returns that the target shares (`mov eax,esi`
+  before each epilogue) are one `return objptr;` at the end.
+- An increment that sits in the loop body vs in the for's third clause
+  moves the `add` (calc_vertice_light: `dest++, objptr += 3` in the clause
+  puts the dest step first, as the target has it).
+- `jge skip; mov al,1; test al,al; je skip` (no setcc) is a bool variable
+  set to a constant and then tested, not an inline returning bool:
+  `if (reset || !surface) reset = true; else if (FAILED(x)) reset = true;
+  if (reset) ...` in LoadTexturePage (92 -> 7). Every DX_TRY body (if/else,
+  ternary, `rc` variable) gives `setl` or a fully threaded `jge`.
+- Pointer stepping vs indexing in an inner loop moves where the pointer
+  copy is scheduled: AdjustTextureUVs `*uv -= adjust; ... uv++;` (5 -> 2).
+- A goto into a shared tail (`goto flare_in_hand;`) changes the local
+  register rotation of the code after the label: LaraGun matched once the
+  armless case repeated the two calls instead (c2 merges the tails anyway).
+- permute.py --decls also fixes x87 operand order when `--sort` shows the
+  two operands as symbols (calc_object_vertices `f_mid_sort + zv`: the
+  float locals' IDs decide; 672 tries). After adding a local, rerun it on
+  the file's later functions (phd_RotateLight flipped and came back with
+  one declaration move).
+
+Triage of the rest (not landed):
+
+- InsertGT3_ZBuffered, InsertGT4_ZBuffered, InsertGT3_Sorted: the
+  cross-product factor loads (x87 scheduler, see above). GT3_Sorted's clip
+  AND/OR order is the sort of `v->clip` (keys fold16(ID) ^ 0x159, the
+  params' IDs): one more symbol before the function fixes it (21 -> 12),
+  but every real declaration moved there breaks InsertGT4_Sorted and the
+  InsertObject*_Sorted functions. Prototype parameter names are not
+  symbols.
+- Func4524e0: the target keeps RenderMode's load in eax as a preferred
+  pick (the rotation stays at eax, so PerspectiveCorrect gets al); ours
+  picks it round robin. Flat under casts, field types and a repeated
+  tail.
+- SkidooControl: the second store survives in the target because the
+  first branch's value is in di (the skidoo anim index, picked first free
+  after the lara anim index took edx), so the two tails differ. In ours
+  the skidoo index is picked first (edx) and both branches store dx, which
+  c2 merges. Every sum shape of the frame expression is canonicalised
+  (9 orders, parens, negations, casts); `+=` splits cost 20.
+- visible_zclip: one to three symbols before it (moving FltNearZ etc. up)
+  or two fewer all cost 24..34; term orders are canonicalised.
+- AddTexturePage16 (32 left), calc_vertice_light (9 left: the count copy
+  comes after the multiply in ours), AdjustTextureUVs (2: `lea ebp,[eax]`
+  from a global count; every countdown form tried gives mov or a +1 lea),
+  LoadTexturePage (7: the flag stays in bl across the call in ours, al in
+  the target).
+
 ## Flat under header sweeps and top pads 32..4096 (step 32)
 
 texture.cpp (AddTexturePage16, LoadTexturePage), draw.c (GetRoomBounds),
