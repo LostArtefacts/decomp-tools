@@ -155,6 +155,47 @@ the draft gets the same instruction, but the attempt gets ecx and is
 undone, and `sound->sound` is in eax instead of edx, so its
 `mov edx,[esp+18h]` cannot be scheduled above the Func4f55c call.
 
+What adds a noconf temp. Almost every neutral rewrite leaves the temp
+list alone (the front end folds them before cg sees them): `x++` /
+`++x` / `x += 1` / `x = x + 1` on a `movie->` field, casts between int
+and dword or pointer and dword, `!x` / `x == 0`, `!(a >= b && c < d)`,
+`(void)` on a call, comma statements, `default: break;`, `++x == y` as
+the condition. What does change it is a different instruction stream
+before CSE: `p->a = &p->a[n]` or `p->a = p->a + n` instead of
+`p->a += n` creates the extra load and add as temps, and when CSE and
+the RMW folding turn it back into the same `add [mem],reg` they stay
+in the list as noconf (the `buffer2` update: `&buffer2[...]` has two
+more noconf temps than `+=`, same instruction). A `?:` result is a
+temp of its own (sav 60); an `if`/`else` instead removes it. The
+const temps at the head of the list (flags 0x101/0x103, register
+"memory", no code) are one per distinct constant stored or compared
+in the loop, in each size it is used: 0, 1 and 2 in dword and byte
+(`state`), 3, -1 (also every `x - 1` index), 0x114 (word), and one
+more with savings 1 not identified; returns do not make one.
+
+The noconf temps also move the registers: the temp list order out of
+RoughSortTemps feeds the GiveRegister ties, so a noconf temp with no
+code of its own changes code elsewhere. With `buffer2 +=`,
+`fieldb4 += field15c` (129 temps) one noconf temp anywhere
+in case 2 (list positions 62..84) gives exactly the original's stack
+slot order. `movie->fieldc4 = movie->fieldc4 + (...)` in case 2 adds
+one there (same as `&fieldc4[...]`): build/fmvscrn_best.c now has
+this, slots exact, 52 lines differ (was 61), the rest being eax/edx
+swaps in the case 2 compare and the start of case 3, the case 3
+`buffer2` / `buffer_size` splits, the `field10c` imul order and the
+[R+0x14] load order. On the same 129-temp base, writing the second
+`buffer_size -=` as `buffer_size = buffer_size - ...` (one noconf near
+position 52) instead fixes all of case 3 (`mov edx,[esp+18h]` above
+the call, the `buffer2` split into esi, the `field10c` code): only
+two swapped instruction pairs are left, but the slot order is wrong
+(&b8 &100 data &108 &bc), and shellsim finds no single insertion that
+fixes it there (moving one noconf temp from positions 49..53 to
+62..84 would). The two effects do not add up: both rewrites together
+are far worse (49 masked lines). `buffer1 = &buffer1[buffer]` on top
+of the fieldc4 draft fixes the call region and `buffer2` split too (43
+lines differ) but makes the `buffer1` update non-RMW, which the
+original's `add [eax+44h],edx` rules out.
+
 ## How GiveBestReg picks a register
 
 The candidates are tree->regs in table order: eax, edx, ebx, ecx, esi,
