@@ -465,13 +465,57 @@ What that means with the model above, with no pragma anywhere (limit
   it is 856. That needs at least six more inline sites after the
   `new` (or deeper nesting).
 
-So with the present call graph the target can't be reached without
+So with the flattened call graph the target can't be reached without
 pragmas: the original used more small inline functions (accessors, list
-helpers) than our source has, and a bigger node constructor. Dropping
-all five pragmas from winvid.cpp costs 506 bytes (WinVidStart 298,
-WinVidGetDisplayAdapters 145, EnumDisplayAdaptersCallback 63) and wins
-$E2; the third pragma (`inline_depth(3)` after WinVidGetDisplayAdapters)
-changes nothing on its own.
+helpers) than our source had, and a bigger node constructor.
+
+### Solved: the list template (2026-11-05)
+
+The original's lists are one template with every method defined in the
+class (the design of Core's SPECIFIC/template.h, which is also inside
+Core's INCLUDE.H), shared by winvid.cpp, winin.cpp and ds.cpp: tr02's
+src/specific/template.h. With it, all four targets above and $E2 come out
+with no pragma at all (winvid, winin and ds now have none). What made the
+difference, in the model's terms:
+
+- Wrappers add levels, not cost. `Insert` calls `AddHead(item)` which is
+  `NewHead() = item`: AddHead (30) is free, but it is a level of its own,
+  and it shares the budget among Insert's three sites (AddHead, the node
+  constructor, AddTail).
+- The node constructor constructs the payload. `NODE(prev, next) :
+  next(..), previous(..)` in `struct NODE { NODE *next, *previous; T body; }`
+  is 38 for a T without a constructor, 49 once DISPLAY_MODE has its empty
+  `DISPLAY_MODE() {}` (Core's ScreenMode has one, plus a four-argument
+  constructor and `Set`), 65 for DISPLAY_ADAPTER (whose implicit
+  constructor is 119). Over 40, so it is no longer free: that is the
+  "constructor of size >= 41" EnumDisplayModesCallback and WinVidStart
+  needed. Sizes seen: NewHead/NewTail 101, Insert 184, RemoveAll 84/95,
+  Set 53, the four-argument ctor 56, LIST() 41, ~LIST 29, the generic
+  adapter's implicit ctor 76 and dtor 51, STRING_FLAGGED() 53, ~ 44,
+  `operator LPTSTR` 23, SetGuid 74, GetHead 23, GetNext 37, `operator[]` 23.
+- The extra sites in the callers are the template's accessors and the
+  adapter's helpers: EnumDisplayAdaptersCallback calls NewTail, SetGuid
+  and twice `operator LPTSTR` (strcpy into a STRING_FLAGGED), so NewTail
+  gets (1000 - 101) // 4; WinVidGetDisplayAdapters calls RemoveAll, then
+  GetHead, GetNext and `operator[]` in a `for (node = l.GetHead(); node;
+  node = l.GetNext(node))` loop.
+- That loop is also where the odd `if (!node) break;` at the end of the
+  old loops came from: GetNext's own null test, inlined.
+- Out-of-line copies keep their addresses but get template names in
+  symbols.csv (`?NewHead@?$LIST@UDISPLAY_MODE@@@@QAEAAUDISPLAY_MODE@@XZ`,
+  `??0NODE@?$LIST@UDISPLAY_MODE@@@@QAE@PAU01@0@Z`, ...); CompareVideoModes
+  is `DISPLAY_MODE::operator<` (Core's Insert compares with `<`).
+- Moving STRING_FLAGGED and the list above CalculateCompatibleColor (the
+  include goes at the top) shifts its parameters' IDs and flips its OR
+  chain (it matches at +2 and +6..10 more symbols, period 16). The rest
+  of the template's API (GetTail, GetPrev, IsEmpty and STRING_FLAGGED's
+  `(LPTSTR)` constructor, all in Core's design) brings it back.
+- Not inliner, but found on the way: EnumDisplayAdaptersCallback's
+  callee-saved pushes sit at the top in the target and were shrink-wrapped
+  in ours until the function used Core's early returns (`if
+  (!DDrawCreate(..)) return TRUE;` and `if (DX_TRY(..)) { DDrawRelease();
+  return TRUE; }`) with each memset next to its dwSize store; and the
+  sorted insert tests `if (!prev) head = .. else prev->next = ..`.
 
 Older observations, from before the model (their explanations are
 superseded by it):
