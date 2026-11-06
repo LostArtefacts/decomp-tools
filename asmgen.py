@@ -223,6 +223,10 @@ class Writer:
                 return f"    call {target}"
             size = "short" if len(raw) == 2 else "near ptr"
             return f"    {mnem} {size} {target}"
+        string = re.match(r"((?:rep\w*\s+)?)(stos|lods|movs|scas|cmps|ins|outs)\s+(BYTE|WORD|DWORD) PTR",
+                          f"{mnem} {ops}")
+        if string:
+            return f"    {string[1]}{string[2]}{string[3][0].lower()}"
         return f"    {mnem} {self.operands(ops, used, mnem)}".rstrip()
 
     def bytes_of(self, at, raw, ops, used):
