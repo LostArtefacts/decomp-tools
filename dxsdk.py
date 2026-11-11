@@ -6,9 +6,11 @@ prefix.
 INSTALLER is the SDK's download, such as the DirectX 5 SDK's
 idx5sdk.exe: a self-extractor holding a cabinet that holds an
 InstallShield self-extractor of the CD's files. 7-Zip unpacks each
-layer until one has sdk/inc and sdk/lib. Their files are copied to
-DIR\\include and DIR\\lib, by default C:\\dx5, the first directory of
-build.include. The Borland libraries are left out.
+layer until one has the headers and libraries: sdk/inc and sdk/lib as
+in the DirectX 5 SDK, or include and lib side by side as in the
+DirectX 6.1 SDK's dx61sdkimage.exe, a WinZip self-extractor. Their
+files are copied to DIR\\include and DIR\\lib, by default C:\\dx5, the
+first directory of build.include. The Borland libraries are left out.
 """
 import os, shutil, subprocess, sys, tempfile
 
@@ -19,14 +21,24 @@ PREFIX = os.environ.get("WINEPREFIX", os.path.join(ROOT, ".wine"))
 
 
 def unpack(path, into):
-    subprocess.run(["7z", "x", "-y", "-bso0", "-bsp0", "-o" + into, path], check=True)
+    cmd = ["7z", "x", "-y", "-bso0", "-bsp0", "-o" + into, path]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        # 7-Zip doesn't recognize some WinZip self-extractors without the type
+        subprocess.run(cmd[:2] + ["-tzip"] + cmd[2:], check=True)
 
 
 def find_sdk(top):
+    """The headers and libraries: a directory with inc or include, holding
+    ddraw.h, next to lib."""
     for dirpath, dirnames, _ in os.walk(top):
         lower = {d.lower(): d for d in dirnames}
-        if os.path.basename(dirpath).lower() == "sdk" and "inc" in lower and "lib" in lower:
-            return os.path.join(dirpath, lower["inc"]), os.path.join(dirpath, lower["lib"])
+        inc = lower.get("inc") or lower.get("include")
+        if inc and "lib" in lower:
+            headers = {n.lower() for n in os.listdir(os.path.join(dirpath, inc))}
+            if "ddraw.h" in headers:
+                return os.path.join(dirpath, inc), os.path.join(dirpath, lower["lib"])
     return None
 
 
@@ -62,7 +74,7 @@ def main():
             found = find_sdk(out)
             todo, layer = list(nested(out)), layer + 1
         if not found:
-            sys.exit(f"no sdk/inc and sdk/lib in {args[0]}")
+            sys.exit(f"no DirectX headers and libraries in {args[0]}")
         for src, sub in zip(found, ("include", "lib")):
             target = os.path.join(dest, sub)
             os.makedirs(target, exist_ok=True)
