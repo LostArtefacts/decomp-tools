@@ -1051,6 +1051,39 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
         for sym in obj.externals():
             if sym.section > 0 and (path, sym.section) not in bases and sym.name in names:
                 bases[path, sym.section] = names[sym.name] - sym.value
+    # Data made only of pointers (like strftime's __lc_time_c) is found
+    # by the addresses of what it points at, once those are known.
+    for _ in range(3):
+        found = 0
+        for path, obj in objs.items():
+            for number, sec in enumerate(obj.sections, 1):
+                if ((path, number) in bases or sec.flags & (coff.CODE | 0x80) or not sec.data
+                        or not sec.relocs or sec.name.split("$")[0] not in (".data", ".rdata")):
+                    continue
+                data, mask, known = bytearray(sec.data), set(), 0
+                for off, index, kind in sec.relocs:
+                    sym = obj.symbols[index]
+                    target = None
+                    if sym.section > 0 and (path, sym.section) in bases:
+                        target = bases[path, sym.section] + sym.value
+                    elif sym.section == 0 and sym.name in names:
+                        target = names[sym.name]
+                    if target is None or kind != coff.DIR32:
+                        mask.update(range(off, off + 4))
+                        continue
+                    addend, = struct.unpack_from("<I", sec.data, off)
+                    struct.pack_into("<I", data, off, (target + addend) & 0xFFFFFFFF)
+                    known += 1
+                if known * 2 > len(sec.relocs):
+                    name = original.section_of(data_lo) if sec.name.startswith(".rdata") else ".data"
+                    va, _, raw, rawsize = original.sections[name]
+                    image = original.data[raw:raw + rawsize]
+                    hits = orig_runtime.find_masked(bytes(data), mask, image, 0, len(image))
+                    if len(hits) == 1:
+                        bases[path, number] = va + hits[0]
+                        found += 1
+        if not found:
+            break
     data_at, bss_at = {}, {}
     for (path, number), address in bases.items():
         name = objs[path].sections[number - 1].name
