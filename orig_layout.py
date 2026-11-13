@@ -828,6 +828,12 @@ def bind_game_data(placed, sources, original, refs, data_range, kinds=DATA_SECTI
                 relocs.append((base + off, target, kind, addend))
         rewriter.write(path)
         bound += len(plan)
+    # Every copy of a COMDAT bound at one place brings the same relocations.
+    unique = {}
+    for reloc in relocs:
+        if unique.setdefault(reloc[0], reloc) != reloc:
+            raise ValueError(f"two relocations at {reloc[0]:#x}: {unique[reloc[0]]} and {reloc}")
+    relocs = list(unique.values())
     with open(os.path.join(LAYOUT, report), "w") as f:
         json.dump({"bound": bound, "unbound": unbound}, f, indent=1)
     print(f"bound {bound} of the game's {'/'.join(kinds)} sections, {len(unbound)} not")
