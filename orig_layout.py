@@ -694,6 +694,10 @@ def bind_game_data(placed, sources, original, refs, data_range, kinds=DATA_SECTI
             initialized = not sec.flags & 0x80
             if not found and initialized and any(sec.data):
                 hits = orig_runtime.find_masked(sec.data, mask_of(sec), image, lo, hi)
+                hits = [h for h in hits if (va + h) % alignment(sec.flags) == 0]
+                if sec.data[-1:] == b"\0":
+                    # A string does not start inside another one.
+                    hits = [h for h in hits if h == 0 or image[h - 1] == 0] or hits
                 placed_bases = [b for b in plan.values() if isinstance(b, int)]
                 if len(hits) > 1 and placed_bases:
                     near = sorted(placed_bases)[len(placed_bases) // 2]
