@@ -29,7 +29,11 @@ with `db` in its code, or one of progress.compiled, modules the
 original compiled from C, however clean their assembly) and cut from
 the original as blobs by link_le.py (red); and its image bytes
 identical to the original's, split the same way, then the ones that
-differ.
+differ. An asm module that a feature's exe.feature_excludes lists
+counts as source, even when asmgen.py wrote it: the original's authors
+wrote it in assembly, and it has a C version that exe builds instead.
+In a PE game's treemap an asm module's functions take their colours by
+name and match like any other's.
 A function without a size in symbols.csv takes the one in
 build/functions.csv, from `just analyze`. One with size 0 shares its
 code with another, as wcc386 does for identical functions; it counts
@@ -874,6 +878,9 @@ class ExeStatsLE(TypedDict):
 
 
 COMPILED = set(project.config.get("progress", {}).get("compiled", []))
+# Hand-written asm modules with a C version, which some feature's exe builds instead
+C_BACKED = {os.path.normpath(p) for paths in project.config.get("exe", {}).get("feature_excludes", {}).values()
+            for p in paths}
 ASSEMBLERS = project.config.get("build", {}).get("file_assemblers", {})
 
 
@@ -887,10 +894,11 @@ def generated(path: str) -> bool:
     for what MASM cannot encode). A `db` in a data segment is data, as
     anyone writes it. A module build.file_assemblers gives to "gas" is
     GNU as source, checked for its data directives in code instead
-    (raw_in_gas_code)."""
+    (raw_in_gas_code). One that exe.feature_excludes lists is the
+    original's own assembly with a C version beside it, so it never is."""
     module = os.path.splitext(os.path.basename(path))[0]
     source = os.path.join(ROOT, "src", module + ".asm")
-    if not os.path.exists(source):
+    if not os.path.exists(source) or os.path.join("src", module + ".asm") in C_BACKED:
         return False
     if module in COMPILED:
         return True
