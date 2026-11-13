@@ -15,9 +15,9 @@ calls and reads the original game.
 The standalone exe links src/ without src/dll/ but with src/exe/ against
 the real libraries, plus the original's resources. Its objects go to
 their own directory, exe.obj_dir, compiled with exe.cflags and
-exe.defines added: a macro there (TR2_EXE) guards the definitions of
-the game's globals and tables in the files that own them, so the DLL
-binds the original's. When exe.cflags has /GL, as the original's Rich
+exe.defines added (for assembly too): a macro there (TR2_EXE) guards
+the definitions of the game's globals and tables in the files that own
+them, so the DLL binds the original's. When exe.cflags has /GL, as the original's Rich
 header can show, the exe's objects hold no machine code and are linked
 with /LTCG: the plain objects in build/obj, which the DLL and compare.py
 use, then give the link order.
@@ -242,7 +242,9 @@ def compile_all(target=DLL, exe_flags=False, feats=()):
         src, obj, flags = job
         converted = win(os.path.join(CONVERTED, os.path.relpath(src, "src")))
         if src.lower().endswith(ASM_EXTS):
-            return run_tool("ml", *BUILD["asflags"], "/Fo" + win(obj), converted)
+            # The exe's and the features' defines reach the assembler too.
+            macros = [f for f in flags if f in defines and f.startswith("/D")]
+            return run_tool("ml", *BUILD["asflags"], *macros, "/Fo" + win(obj), converted)
         return run_tool("cl", "/c", *flags, "/I" + win(CONVERTED), "/Fo" + win(obj), converted)
 
     failed = 0
