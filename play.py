@@ -9,6 +9,8 @@ Steps run in order:
     key:KEY          tap a key (xdotool names: z, x, Escape, Up, Down, ...)
     hold:KEY:SECONDS hold a key down
     shot:NAME        save a screenshot to build/shots/NAME.png
+    fit              resize the game window to the screen (Wine shows a
+                     fullscreen game in its window, which can stay 0x0)
 
 --exe runs build/game/NAME instead of the patched <name>.exe, and
 --standalone the standalone build, <name>_standalone.exe there (<name>
@@ -98,6 +100,13 @@ def drive(game, env, steps, tap=0.1):
             xdo(env, "keydown", key)
             time.sleep(float(secs))
             xdo(env, "keyup", key)
+        elif kind == "fit":
+            # A game whose exclusive mode keeps its window as created
+            # (DDSCL_NOWINDOWCHANGES on a 0x0 window) shows nothing under
+            # Wine until the window covers the screen.
+            width, _, height = SCREEN.partition("x")
+            for window in xdo(env, "search", "--name", TITLE).split():
+                xdo(env, "windowsize", window, width, height.partition("x")[0], "windowmove", window, "0", "0")
         elif kind == "shot":
             path = os.path.join(SHOTS, arg + ".png")
             subprocess.run(["import", "-window", "root", path], env=env, check=True)
