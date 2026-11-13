@@ -4,7 +4,9 @@
 
 The .res is what rc would write for the same resources, so the linker
 (through cvtres) builds an identical .rsrc from it. The original game's
-resources are its icon and the icon's group.
+resources are its icon and the icon's group. write_obj() writes the
+object cvtres 5.00 would make of them, for a toolchain whose cvtres
+lays them out differently.
 """
 import struct, sys
 
@@ -66,6 +68,77 @@ def write_res(path, items):
         head += struct.pack("<IHHII", 0, 0x1030, lang, 0, 0)
         out += struct.pack("<II", len(data), 8 + len(head)) + head + pad4(data)
     open(path, "wb").write(out)
+
+
+DIR32NB = 0x07  # IMAGE_REL_I386_DIR32NB: an image-relative address
+RSRC_FLAGS = 0x40 | 0x40000000 | 0x00300000  # initialized, read, align 4
+
+
+def write_obj(path, items, align=8, timestamp=0):
+    """Writes the resources' COFF object the way cvtres 5.00 does: the
+    directory tree, breadth first, its data entries (in the tree's order)
+    and names in .rsrc$01; the data, in the .res order, each `align`ed,
+    in .rsrc$02."""
+    items = list(items)
+    tree = {}
+    for index, (typ, name, lang, _) in enumerate(items):
+        tree.setdefault(typ, {}).setdefault(name, {})[lang] = index
+
+    def order(keys):
+        # Named entries first, by name; then IDs in increasing order.
+        return sorted(keys, key=lambda k: (0, k.upper(), "") if isinstance(k, str) else (1, "", k))
+
+    levels = [[((), tree)]]
+    while True:
+        nxt = [(path + (k,), node[k]) for path, node in levels[-1] for k in order(node)
+               if isinstance(node[k], dict)]
+        if not nxt:
+            break
+        levels.append(nxt)
+    offsets, at, leaves = {}, 0, []
+    for level in levels:
+        for key, node in level:
+            offsets[key] = at
+            at += 16 + 8 * len(node)
+            leaves += [node[k] for k in order(node) if not isinstance(node[k], dict)]
+    slot = {index: n for n, index in enumerate(leaves)}  # data entries in tree order
+    entries = at
+    at += 16 * len(items)
+    strings, names = {}, bytearray()
+    for level in levels:
+        for _, node in level:
+            for key in node:
+                if isinstance(key, str) and key not in strings:
+                    strings[key] = at + len(names)
+                    names += struct.pack("<H", len(key)) + key.encode("utf-16-le")
+    head = bytearray(at) + names
+    head += bytes(-len(head) % 4)
+    data, relocs, placed = bytearray(), [], {}
+    for index, (_, _, _, blob) in enumerate(items):
+        data += bytes(-len(data) % align)
+        placed[index] = len(data)
+        data += blob
+    data += bytes(-len(data) % align)
+    for level in levels:
+        for key, node in level:
+            off = offsets[key]
+            keys = order(node)
+            named = sum(1 for k in keys if isinstance(k, str))
+            struct.pack_into("<IIHHHH", head, off, 0, timestamp, 0, 0, named, len(keys) - named)
+            for i, k in enumerate(keys):
+                ident = 0x80000000 | strings[k] if isinstance(k, str) else k
+                child = node[k]
+                if isinstance(child, dict):
+                    target = 0x80000000 | offsets[key + (k,)]
+                else:
+                    target = entries + 16 * slot[child]
+                struct.pack_into("<II", head, off + 16 + 8 * i, ident, target)
+    for index, (_, _, _, blob) in enumerate(items):
+        struct.pack_into("<IIII", head, entries + 16 * slot[index], placed[index], len(blob), 0, 0)
+        relocs.append((entries + 16 * slot[index], "$R000000", DIR32NB))
+    coff.write_object(path, [(".rsrc$01", RSRC_FLAGS, bytes(head), relocs),
+                             (".rsrc$02", RSRC_FLAGS, bytes(data), [])],
+                      {"$R000000": (2, 0)}, [], {})
 
 
 def main():

@@ -408,7 +408,11 @@ def link_exe(objs: list[str], exe_objs: list[str] | None = None,
     res = os.path.join(os.path.dirname(exe_objs[0]), f"{project.NAME}.res")
     resources = hook("exe_resources")
     image = (resources(list(feats)) if resources else None) or ORIGINAL
-    rsrc.write_res(res, rsrc.resources(image))
+    if EXE_CONFIG["resource_object"]:
+        res = os.path.splitext(res)[0] + "_res.obj"
+        rsrc.write_obj(res, rsrc.resources(image))
+    else:
+        rsrc.write_res(res, rsrc.resources(image))
     linked = dict(zip(objs, exe_objs))
     ordered = [linked[o] for o in link_order(objs, read_symbols(), EXE_CONFIG["link_order"])]
     made = {}
