@@ -26,6 +26,11 @@ FEAT (a comma-separated list) turns on the exe's optional features,
 exe.features in project.toml: `FEAT=frame_cap build.py exe` compiles
 with /DFEAT_FRAME_CAP=1 into build/obj_frame_cap. The DLL is always
 built from the vanilla code, so it still matches the original.
+exe.feature_sources lists the sources only the exe with a feature
+builds, exe.feature_excludes the ones it leaves out instead: a module
+the original's authors wrote in assembly is kept as .s, so it matches,
+beside a C version under `#if FEAT_C_ASM` that the exe with
+`FEAT=c_asm` builds in its place.
 
 build.hook names a Python file with the game's own steps. It may define:
 
@@ -67,6 +72,9 @@ FEATURES = EXE_CONFIG["features"]  # FEAT name: macro
 # FEAT name: the sources only the exe with that feature builds
 FEATURE_SOURCES = {f: {os.path.normpath(p) for p in paths}
                    for f, paths in EXE_CONFIG["feature_sources"].items()}
+# FEAT name: the sources the exe with that feature leaves out
+FEATURE_EXCLUDES = {f: {os.path.normpath(p) for p in paths}
+                    for f, paths in EXE_CONFIG["feature_excludes"].items()}
 GLUE_PREFIX = "dll_"  # objects from src/dll/, the DLL's own code
 DLL_ONLY, EXE_ONLY = "dll", "exe"  # subdirectories of src/ only one target builds
 TIMEOUT = BUILD["timeout"]  # cl spins forever after a fatal error
@@ -171,6 +179,12 @@ def features():
     unknown = [f for f in names if f not in FEATURES]
     if unknown:
         sys.exit(f"unknown FEAT {', '.join(unknown)}; known: {', '.join(FEATURES) or 'none'}")
+    for f, paths in FEATURE_EXCLUDES.items():
+        for p in sorted(paths):
+            if not os.path.exists(os.path.join(ROOT, p)):
+                sys.exit(f"exe.feature_excludes: {f}: no {p}")
+            if os.path.relpath(p, "src").split(os.sep)[0] == DLL_ONLY:
+                sys.exit(f"exe.feature_excludes: {f}: {p} is in src/{DLL_ONLY}/, which the exe never builds")
     return names
 
 
@@ -254,7 +268,8 @@ def sources(target=DLL, obj_dir=OBJ, feats=()):
     """Yields (source, object) for each .c, .cpp, .s and .asm in src/ that
     `target` builds with the features `feats`."""
     skip = EXE_ONLY if target == DLL else DLL_ONLY
-    unused = set().union(*(paths for f, paths in FEATURE_SOURCES.items() if f not in feats))
+    unused = set().union(*(paths for f, paths in FEATURE_SOURCES.items() if f not in feats),
+                         *(paths for f, paths in FEATURE_EXCLUDES.items() if f in feats))
     found = (glob.glob(os.path.join(ROOT, "src/**/*" + ext), recursive=True) for ext in SOURCE_EXTS)
     for src in sorted(sum(found, [])):
         rel = os.path.relpath(src, os.path.join(ROOT, "src"))

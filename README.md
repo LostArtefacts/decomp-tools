@@ -191,7 +191,7 @@ puts it on `main` at the same commit.
 | File | Does |
 | --- | --- |
 | `project.py` | reads `project.toml`; the `orig`, `game`, `standalone` and `clean` steps |
-| `build.py` | compiles `src/` (re-encoded, per-file flags, parallel), writes the hook table and thunks, links the DLL and the standalone exe |
+| `build.py` | compiles `src/` (re-encoded, per-file flags, parallel), writes the hook table and thunks, links the DLL and the standalone exe; `FEAT=a,b` builds the exe with features, which may swap sources (`feature_sources`, `feature_excludes`) |
 | `compare.py` | compares compiled functions with the original, relocations resolved through `symbols.csv` |
 | `compare_exe.py` | compares the standalone exe with the original: headers, Rich header, sections, imports, code and data by symbol |
 | `order.py` | lists, per object, which of the standalone exe's functions sit at their original address and in the original's order (`--summary`: one line per object) |
@@ -323,6 +323,7 @@ search lists are tried in order, the newest match of each first.
 | `libs` | `libc.lib` | libraries, in the original's order |
 | `features` | `{}` | `FEAT` names and their macros: `frame_cap = "FEAT_FRAME_CAP"` compiles `FEAT=frame_cap` into `build/obj_frame_cap` with `/DFEAT_FRAME_CAP=1` |
 | `feature_sources` | `{}` | sources only the exe with a feature builds and links |
+| `feature_excludes` | `{}` | sources the exe with a feature leaves out: `c_asm = ["src/specific/span.s"]` builds the C under `#if FEAT_C_ASM` in place of the original's hand-written assembly, which the DLL and `compare.py` keep |
 
 The exe's map is `build/<name>_exe.map`, the DLL's `build/<name>.map`.
 

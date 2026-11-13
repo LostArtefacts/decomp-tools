@@ -99,6 +99,7 @@ DEFAULTS = {
         "import_defs": [],  # .def files of DLLs no library ships an import library for; the link builds them
         "features": {},
         "feature_sources": {},
+        "feature_excludes": {},
     },
     "symbols": {
         "import_libs": [".wine/drive_c/msvc5/lib", ".wine/drive_c/dx5/lib"],
