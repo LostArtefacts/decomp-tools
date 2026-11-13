@@ -52,6 +52,7 @@ Intermediate files and reports go to build/layout/.
 """
 from __future__ import annotations
 
+import bisect
 import collections
 import contextlib
 import csv
@@ -473,7 +474,7 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
 
 
 def bind_data(objects, data_start, data_size, initial=None, code_range=None, skip=0,
-              bindings=None, data_relocs=(), split=None):
+              bindings=None, data_relocs=(), split=None, compiled=()):
     """Writes build/obj_placed/000_data.obj, the original's data section with
     the globals the objects need from it; returns [its path]. The section
     leaves out the first `skip` bytes, which the linker gives to the
@@ -485,7 +486,9 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
     zero-initialized data sit between: 000_data.obj then has the
     initialized game data up to data_end as .data and the bss range as
     .bss, and a second object (returned second, to link after the
-    runtime) has the tail as .bss."""
+    runtime) has the tail as .bss. compiled ([(address, bytes)], from
+    bind_game_data) is the compiled initialized data, which goes over
+    `initial`; data.json lists what `initial` still supplies."""
     defined, needed, functions = set(), set(), {}
     for path in objects:
         obj = coff.Object(path)
@@ -516,19 +519,29 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
             raise ValueError(f"{name} at {address:#x} is under the runtime's tables")
     contents = bytearray(data_size)
     relocs = []
+    own = bytearray(data_size)  # 1 where compiled data covers the section
+    for address, data in compiled:
+        contents[address - data_start:address - data_start + len(data)] = data
+        own[address - data_start:address - data_start + len(data)] = b"\1" * len(data)
+    for address, _, _, _ in data_relocs:
+        own[address - data_start:address - data_start + 4] = b"\1" * 4
+    supplied = []
     if initial is not None:
-        contents[:len(initial)] = initial
+        for at in range(skip, len(initial)):
+            if not own[at]:
+                contents[at] = initial[at]
+                if initial[at]:
+                    supplied.append(at)
         starts = {}
         for address, _, names in rows:
             if code_range and code_range[0] <= address < code_range[1]:
                 name = next((n for n in names if n in functions), None)
                 if name:
                     starts.setdefault(address, name)
-        covered = {a - data_start + i for a, _, _, _ in data_relocs for i in range(4)}
         at = skip
         while at + 4 <= len(initial):
             value = struct.unpack_from("<I", contents, at)[0]
-            if value in starts and at not in covered:
+            if value in starts and not any(own[at:at + 4]):
                 relocs.append((data_start + at, starts[value], coff.DIR32, 0))
                 at += 4
             else:
@@ -573,10 +586,22 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
         paths.append(write_data(os.path.join(PLACED, "zzy_data_tail.obj"), ".bss", BSS_FLAGS,
                                 tail_start, tail_end, data_start, bytes(tail_end - tail_start),
                                 tail, [], "_layout_tail_start"))
-    missing = sorted(n for n in needed if n not in bound)
+    missing = sorted(n for n in needed if n not in bound and not n.startswith("_layout_"))
+    names = {}
+    for address, _, row_names in rows:
+        names.setdefault(address, row_names[0] if row_names else "?")
+    starts_sorted = sorted(a for a in names if data_start <= a < data_start + data_size)
+    runs = {}
+    for at in supplied:
+        index = bisect.bisect_right(starts_sorted, data_start + at) - 1
+        owner = f"{starts_sorted[index]:#x} {names[starts_sorted[index]]}" if index >= 0 else "?"
+        runs[owner] = runs.get(owner, 0) + 1
     with open(os.path.join(LAYOUT, "data.json"), "w") as f:
-        json.dump({"bound": len(bound), "pointers": len(relocs), "unbound": missing}, f, indent=1)
-    print(f"bound {len(bound)} globals, {len(relocs)} pointers")
+        json.dump({"bound": len(bound), "pointers": len(relocs), "unbound": missing,
+                   "compiled_bytes": sum(own), "from_original": len(supplied),
+                   "from_original_by_symbol": runs}, f, indent=1)
+    print(f"bound {len(bound)} globals, {len(relocs)} pointers, {sum(own):#x} bytes compiled, "
+          f"{len(supplied):#x} nonzero bytes from the original")
     LAST_BOUND.clear()
     LAST_BOUND.update(bound)
     return paths
@@ -1272,7 +1297,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
     if runtime:
         placed, members, libs, info = link_runtime(placed, objects, original, (text_va, game_end + 1),
                                                    runtime, flags)
-    bindings, data_relocs, split, constants, guids = {}, [], None, [], []
+    bindings, data_relocs, split, constants, guids, compiled = {}, [], None, [], [], []
     if info is not None:
         sources = {os.path.basename(p): p for p in objects}
         refs = game_references(original)
@@ -1292,8 +1317,8 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
                 placed, sources, original, refs, (start, end), (".rdata",), ".rdata", "game-rdata.json")
             constants = [bind_rdata(os.path.join(PLACED, "000_rdata.obj"), start, end, original,
                                     r_bindings, r_relocs, r_contents, initial_data == "original")]
-        bindings, data_relocs, _ = bind_game_data(placed, sources, original, refs,
-                                                  (data_va, data_va + data_size))
+        bindings, data_relocs, compiled = bind_game_data(placed, sources, original, refs,
+                                                         (data_va, data_va + data_size))
         for name, address in info["commons"].items():
             bindings.setdefault(name, address)
         split = runtime_split(info, data_va, data_size)
@@ -1301,7 +1326,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
     fills, skip = {}, 0
     for attempt in range(6):
         data = bind_data(placed, data_va, data_size, initial, (text_va, game_end + 1), skip,
-                         bindings, data_relocs, split)
+                         bindings, data_relocs, split, compiled)
         # Data fillers follow the game's own data, code fillers the runtime's.
         early = [filler(n, f, z)[0] for n, (f, z) in fills.items() if not f & coff.CODE]
         late = [filler(n, f, z)[0] for n, (f, z) in fills.items() if f & coff.CODE]
