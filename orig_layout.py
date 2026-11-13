@@ -70,6 +70,7 @@ DATA_FLAGS = 0x40 | 0x40000000 | 0x80000000 | 0x00300000  # initialized, read, w
 CODE_FILL = 0x90
 BSS_FLAGS = 0x80 | 0x40000000 | 0x80000000 | 0x00300000  # uninitialized, read, write, align 4
 NOP_FLAGS = 0x00100A00  # an empty, removed .drectve-like section
+RDATA_FLAGS = 0x40 | 0x40000000 | 0x00500000  # initialized, read, align 16
 
 
 def read_named_rows():
@@ -592,7 +593,8 @@ def game_references(original):
     return orig_runtime.references(entries, original.read)
 
 
-def bind_game_data(placed, sources, original, refs, data_range):
+def bind_game_data(placed, sources, original, refs, data_range, kinds=DATA_SECTIONS, section=".data",
+                   report="game-data.json"):
     """Removes the game objects' data sections (.data, .bss) whose original
     address is known, so 000_data serves them there. An address comes from
     what matching code points at (refs, from game_references), a
@@ -602,15 +604,19 @@ def bind_game_data(placed, sources, original, refs, data_range):
     original laid out in another order are bound one by one, when no
     relocation needs their section's own symbol. Every copy of a COMDAT
     goes where one copy does. Returns ({name: address}, [(address, target,
-    type, addend)] for the relocations of the removed initialized data)."""
+    type, addend)] for the relocations of the removed initialized data,
+    [(address, bytes)] of its contents). kinds and section select the
+    sections (.rdata for the constants) and the original's section whose
+    contents locate them; data_range bounds where they can go."""
     bases, names, symbols = refs
     rows = {}
     for address, _, row_names in read_rows():
         for name in row_names:
             rows.setdefault(name, address)
-    va, _, raw, rawsize = original.sections[".data"]
+    va, _, raw, rawsize = original.sections[section]
     image = original.data[raw:raw + rawsize]
-    unbound, plans, comdats, objs = [], {}, {}, {}
+    lo, hi = max(data_range[0] - va, 0), min(data_range[1] - va, rawsize)
+    unbound, plans, comdats, objs, deferred, loose_contents = [], {}, {}, {}, [], {}
     for path in placed:
         source = sources.get(os.path.basename(path))
         if source is None:
@@ -632,7 +638,7 @@ def bind_game_data(placed, sources, original, refs, data_range):
             return found
 
         for number, sec in enumerate(obj.sections, 1):
-            if sec.name not in DATA_SECTIONS or sec.flags & coff.CODE or not len(sec.data):
+            if sec.name not in kinds or sec.flags & coff.CODE or not len(sec.data):
                 continue
             own = section_symbol(obj, number)
             members = [(i, y) for i, y in enumerate(obj.symbols) if y and y.section == number and i != own]
@@ -646,7 +652,7 @@ def bind_game_data(placed, sources, original, refs, data_range):
                 found |= {a - sym.value for a in at}
             initialized = not sec.flags & 0x80
             if not found and initialized and any(sec.data):
-                hits = orig_runtime.find_masked(sec.data, mask_of(sec), image, 0, len(image))
+                hits = orig_runtime.find_masked(sec.data, mask_of(sec), image, lo, hi)
                 placed_bases = [b for b in plan.values() if isinstance(b, int)]
                 if len(hits) > 1 and placed_bases:
                     near = sorted(placed_bases)[len(placed_bases) // 2]
@@ -654,6 +660,9 @@ def bind_game_data(placed, sources, original, refs, data_range):
                 if len(hits) == 1:
                     found.add(va + hits[0])
             label = f"{stem}:{number}:{sec.name}:{len(sec.data)}"
+            # Constants the original's compiler emitted in another order
+            # (or not at all) can still go one by one.
+            loose = initialized and not sec.relocs and not sec_refs[own] and members
             if len(found) == 1:
                 base = found.pop()
                 if not data_range[0] <= base <= data_range[1] - len(sec.data):
@@ -662,7 +671,10 @@ def bind_game_data(placed, sources, original, refs, data_range):
                 here = original.read(base, len(sec.data)) if base < va + rawsize else b""
                 here = here.ljust(len(sec.data), b"\0")
                 if initialized and not orig_runtime.masked_equal(sec.data, mask_of(sec), here):
-                    unbound.append(f"{label} differs at {base:#x}")
+                    if loose:
+                        deferred.append((path, number, each, label))
+                    else:
+                        unbound.append(f"{label} differs at {base:#x}")
                     continue
                 if not initialized and any(here):
                     unbound.append(f"{label} over data at {base:#x}")
@@ -675,12 +687,62 @@ def bind_game_data(placed, sources, original, refs, data_range):
             elif (not initialized and not sec_refs[own]
                   and all(len(at) == 1 for at in each.values()) and each):
                 plan[number] = {i: next(iter(at)) for i, at in each.items()}
+            elif loose:
+                deferred.append((path, number, each, label))
             else:
                 unbound.append(label + (" (conflict)" if found else ""))
+    # One by one: each constant where matching code points at it, or else
+    # where the original has its bytes, preferring bytes nothing else
+    # claims (read-only constants can share bytes with equal ones).
+    claimed = set()
+    for path, plan in plans.items():
+        for number, base in plan.items():
+            if isinstance(base, int) and not objs[path].sections[number - 1].flags & 0x80:
+                claimed.update(range(base, base + len(objs[path].sections[number - 1].data)))
+    pieces = {}
+    for path, number, each, label in deferred:
+        sec = objs[path].sections[number - 1]
+        own = section_symbol(objs[path], number)
+        offsets = sorted({y.value for i, y in enumerate(objs[path].symbols)
+                          if y and y.section == number and i != own} | {len(sec.data)})
+        spans = {}
+        for index, sym in enumerate(objs[path].symbols):
+            if sym and sym.section == number and index != own:
+                spans[index] = sec.data[sym.value:offsets[offsets.index(sym.value) + 1]]
+        if any(not data for data in spans.values()):
+            unbound.append(label + " (empty constant)")
+            continue
+        pieces[path, number] = (each, spans, label)
+    for (path, number), (each, spans, label) in pieces.items():
+        at = {}
+        for index, data in spans.items():
+            known = [a for a in each.get(index, ()) if original.read(a, len(data)) == data
+                     and data_range[0] <= a <= data_range[1] - len(data)]
+            if len(known) == 1:
+                at[index] = known[0]
+        for index, data in spans.items():
+            if index in at:
+                continue
+            align = 8 if len(data) >= 8 else 4
+            hits = [va + h for h in orig_runtime.find_masked(data, set(), image, lo, hi)
+                    if (va + h) % align == 0]
+            free = [h for h in hits if not claimed & set(range(h, h + len(data)))]
+            options = free or hits
+            if not options:
+                break
+            near = list(at.values()) or [data_range[0]]
+            at[index] = min(options, key=lambda h: min(abs(h - n) for n in near))
+        if len(at) != len(spans):
+            unbound.append(label + " (not in the original)")
+            continue
+        for index, address in at.items():
+            claimed.update(range(address, address + len(spans[index])))
+        plans[path][number] = at
+        loose_contents[path, number] = {index: spans[index] for index in at}
     for path, plan in plans.items():
         obj = objs[path]
         for number, sec in enumerate(obj.sections, 1):
-            if number in plan or sec.name not in DATA_SECTIONS or not sec.flags & COMDAT:
+            if number in plan or sec.name not in kinds or not sec.flags & COMDAT:
                 continue
             for sym in obj.symbols:
                 if sym and sym.section == number and sym.name in comdats:
@@ -689,7 +751,7 @@ def bind_game_data(placed, sources, original, refs, data_range):
                     label = f"{stem}:{number}:{sec.name}:{len(sec.data)}"
                     if label in unbound:
                         unbound.remove(label)
-    bindings, relocs, bound = {}, [], 0
+    bindings, relocs, contents, bound = {}, [], [], 0
     for path, plan in plans.items():
         if not plan:
             continue
@@ -716,8 +778,12 @@ def bind_game_data(placed, sources, original, refs, data_range):
                     raise ValueError(f"{name} is bound at {bindings[name]:#x} and {address:#x}")
             rewriter.remove(obj, number, rename)
         for number, base in plan.items():
+            for index, data in loose_contents.get((path, number), {}).items():
+                contents.append((base[index], data))
             if not isinstance(base, int):
                 continue
+            if not obj.sections[number - 1].flags & 0x80:
+                contents.append((base, bytes(obj.sections[number - 1].data)))
             for off, index, kind in obj.sections[number - 1].relocs:
                 sym = obj.symbols[index]
                 if sym.section > 0 and sym.section in plan and index == section_symbol(obj, sym.section):
@@ -730,10 +796,10 @@ def bind_game_data(placed, sources, original, refs, data_range):
                 relocs.append((base + off, target, kind, addend))
         rewriter.write(path)
         bound += len(plan)
-    with open(os.path.join(LAYOUT, "game-data.json"), "w") as f:
+    with open(os.path.join(LAYOUT, report), "w") as f:
         json.dump({"bound": bound, "unbound": unbound}, f, indent=1)
-    print(f"bound {bound} of the game's data sections, {len(unbound)} not")
-    return bindings, relocs
+    print(f"bound {bound} of the game's {'/'.join(kinds)} sections, {len(unbound)} not")
+    return bindings, relocs, contents
 
 
 def write_data(path, name, flags, start, end, data_start, contents, symbols, relocs, marker):
@@ -994,12 +1060,84 @@ def runtime_split(info, data_va, data_size):
             "tail": (max(e for _, e in bss), data_va + data_size)}
 
 
-def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=()):
+def group_start(map_path, section, group):
+    """The offset in PE section number `section` where a link map's
+    contribution `group` (like .rdata) starts."""
+    pattern = re.compile(rf"^\s*{section:04x}:([0-9a-f]{{8}})\s+[0-9a-f]{{8}}H\s+{re.escape(group)}\s")
+    with open(map_path, encoding="latin-1") as f:
+        for line in f:
+            m = pattern.match(line)
+            if m:
+                return int(m.group(1), 16)
+    return None
+
+
+def data_members(map_path, libraries, original, refs, lo, hi):
+    """The members of data-only libraries (like dxguid.lib) the link uses
+    whose symbols the original has in [lo, hi), as objects in the order
+    of their addresses there: the original's linker pulled them in before
+    the runtime's. Returns [(address, path)]."""
+    _, names, _ = refs
+    rows = {}
+    for address, _, row_names in read_rows():
+        for name in row_names:
+            rows.setdefault(name, address)
+    found = []
+    for name in libraries:
+        path = lib_path(name)
+        if path is None:
+            raise ValueError(f"the data library {name} is not on the library path")
+        for member in orig_runtime.extract(map_path, name, path):
+            obj = coff.Object(member)
+            if any(sec.flags & coff.CODE for sec in obj.sections):
+                continue
+            at = {rows.get(y.name, names.get(y.name)) for y in obj.externals() if y.section > 0}
+            at.discard(None)
+            if len(at) == 1 and lo <= min(at) < hi:
+                found.append((min(at), member))
+    return sorted(found)
+
+
+def bind_rdata(path, start, end, original, bindings, relocs, contents, fallback):
+    """Writes an object with one .rdata section covering [start, end) of the
+    original's .rdata: the compiled constants bound there (contents, at
+    their addresses), and where nothing compiled covers it the original's
+    bytes if `fallback`, else zeros. Returns its path and the number of
+    bytes the original supplied."""
+    body = bytearray(original.read(start, end - start)) if fallback else bytearray(end - start)
+    covered = bytearray(end - start)
+    for address, data in contents:
+        if start <= address and address + len(data) <= end:
+            body[address - start:address - start + len(data)] = data
+            covered[address - start:address - start + len(data)] = b"\1" * len(data)
+    gaps = [i for i, c in enumerate(covered) if not c and body[i]]
+    write_data(path, ".rdata", RDATA_FLAGS, start, end, start, bytes(body),
+               {n: a for n, a in bindings.items() if start <= a < end}, relocs, "_layout_rdata_start")
+    runs, run = [], None
+    for i in gaps:
+        if run and run[1] == i:
+            run[1] = i + 1
+        else:
+            run = [i, i + 1]
+            runs.append(run)
+    with open(os.path.join(LAYOUT, "rdata.json"), "w") as f:
+        json.dump({"range": [hex(start), hex(end)], "from_original": len(gaps),
+                   "runs": [(hex(start + a), b - a) for a, b in runs]}, f, indent=1)
+    print(f"bound {len(bindings)} constants in {start:#x}-{end:#x}, "
+          f"{len(gaps)} nonzero bytes {'from the original' if fallback else 'left zero'}")
+    return path
+
+
+def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=(), data_libraries=()):
     """Links build/<name>.exe from the exe's objects in the original's layout.
     extra_rows are (address, size, [symbols]) rows for functions symbols.csv
     does not list, such as a source file's static initializers. runtime
     names the libraries (like libc.lib) whose members are linked in the
-    original's order (orig_runtime)."""
+    original's order (orig_runtime). data_libraries name data-only
+    libraries (like dxguid.lib) whose members the original has between
+    the game's constants and the runtime's: they are linked as objects
+    there, and the game's constants (.rdata) are bound at their original
+    addresses before them."""
     EXTRA_ROWS[:] = extra_rows
     os.makedirs(LAYOUT, exist_ok=True)
     original = compare_exe.PE(project.ORIGINAL)
@@ -1017,11 +1155,28 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
     if runtime:
         placed, members, libs, info = link_runtime(placed, objects, original, (text_va, game_end + 1),
                                                    runtime, flags)
-    bindings, data_relocs, split = {}, [], None
+    bindings, data_relocs, split, constants, guids = {}, [], None, [], []
     if info is not None:
         sources = {os.path.basename(p): p for p in objects}
-        bindings, data_relocs = bind_game_data(placed, sources, original, game_references(original),
-                                               (data_va, data_va + data_size))
+        refs = game_references(original)
+        rdata_va, rdata_size = original.sections[".rdata"][:2]
+        number = list(sections(os.path.join(LAYOUT, "preliminary.exe"))).index(".rdata") + 1
+        start = group_start(os.path.join(LAYOUT, "preliminary.map"), number, ".rdata")
+        if start is not None:
+            start += rdata_va
+            ends = [a for (p, n), a in info["bases"].items()
+                    if info["objs"][p].sections[n - 1].name.startswith(".rdata")
+                    and start <= a < rdata_va + rdata_size]
+            end = min(ends, default=rdata_va + rdata_size)
+            guids = data_members(os.path.join(LAYOUT, "preliminary.map"), data_libraries, original,
+                                 refs, start, end)
+            end = min([end] + [a for a, _ in guids])
+            r_bindings, r_relocs, r_contents = bind_game_data(
+                placed, sources, original, refs, (start, end), (".rdata",), ".rdata", "game-rdata.json")
+            constants = [bind_rdata(os.path.join(PLACED, "000_rdata.obj"), start, end, original,
+                                    r_bindings, r_relocs, r_contents, initial_data == "original")]
+        bindings, data_relocs, _ = bind_game_data(placed, sources, original, refs,
+                                                  (data_va, data_va + data_size))
         for name, address in info["commons"].items():
             bindings.setdefault(name, address)
         split = runtime_split(info, data_va, data_size)
@@ -1034,7 +1189,8 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         early = [filler(n, f, z)[0] for n, (f, z) in fills.items() if not f & coff.CODE]
         late = [filler(n, f, z)[0] for n, (f, z) in fills.items() if f & coff.CODE]
         with exe_options(link_order="source", ldflags=flags, libs=libs):
-            build.link_exe([data[0], *placed, *early, *members, *data[1:], *late], customize=False)
+            build.link_exe([data[0], *constants, *placed, *[p for _, p in guids], *early, *members,
+                            *data[1:], *late], customize=False)
         ours = sections(build.EXE)
         exe_map = compare_exe.read_map(build.EXE_MAP)
         shutil.copy(build.EXE_MAP, os.path.join(LAYOUT, f"attempt{attempt}.map"))
