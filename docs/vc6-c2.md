@@ -119,16 +119,57 @@ twice: ecx, edx, ecx, edx, ... (eax holds bp).
 
 After the sort (0x10709451: ebx parent, eax the sorted operand list)
 operands are ordered by key = rank << 24 | count << 16 | hash16, highest
-first, as in VC5. The side with the higher Sethi-Ullman rank is
+first, as in VC5. VC6's count includes the operator itself: it is one
+plus the sum of its operands' counts (0x107094b4); constants count as
+zero. The side with the higher Sethi-Ullman rank is
 evaluated first: in `item->y + GCB[3] <= l->y + bounds[2]`, l->y loads
 first because `bounds[2]` (a load through a register pointer) makes that
 side rank 2. VC6 also canonicalises compares: `b >= a` for `a <= b`
-gives identical code. Unlike VC5 the leaf hash is NOT fold16(front end
-ID), and declaration order did not change anything in the cases tried. A
-temp holding a call result takes the rank of its defining tree (9 for a
-call), and single-use locals are forwarded before the sort, so naming a
-call result does not change the order; the register a result lands in
-is the local picker's choice, made after the sort.
+gives identical code. A temp holding a call result takes the rank of its
+defining tree (9 for a call), and single-use locals are forwarded before
+the sort, so naming a call result does not change the order; the register
+a result lands in is the local picker's choice, made after the sort.
+
+### Rule S2: VC6's operand hash (reversed 2026-11-13)
+
+The hash routine is 0x10709518. `fold16(v)` means the xor of the high
+and low 16 bits; all results below are truncated to 16 bits.
+
+| expression | hash16 | code |
+|---|---|---|
+| ordinary class 1/2 symbol, without a defining tree | `rol16(fold16(symbol[+0x1c]), 5)` | 0x107095e7 .. 0x1070961e |
+| class 3 symbol | `fold16(symbol[+0x1c])` | 0x107095f9 .. 0x1070968a |
+| class 1/2 compiler temp, symbol byte +4 == 3 | `symbol[+0x1c] << 6` | 0x10709620 |
+| memory reference, class 5/6 | `fold16(offset) + opcode - 0x145 + (hash(base) << 8)` | 0x10709584 .. 0x107095be |
+| operator | `opcode - 0x145 + sum(hash(child[i]) << (i & 7))` | 0x1070964e .. 0x10709687 |
+
+A class 1/2 compiler temp with a defining tree uses that tree instead
+(0x107095cc -> 0x10792e3b). VC6 memory nodes store their offset at +0x24
+and base at +0x28, four bytes later than VC5. This matters when decoding
+the oracle: reading VC5's offsets makes a real `mesh->x` look like `[0]`.
+The preceding tree walk can also copy a defining tree's whole key into
+a memory operand whose base is a CSE temp (0x10709383 .. 0x107093d0),
+instead of giving that operand the ordinary memory-leaf key. This is
+why the `mesh + 8` CSE below carries its address tree's rank and count.
+
+The ordinary symbol's +0x1c is a back end index, not the front end ID at
+front-end-symbol +0x28. An index can change when an earlier first use
+creates another symbol, even if copy propagation later removes its
+instructions. Changing declaration order alone did not change it in the
+cases checked.
+
+Checked in SkeletonControl: `pos.x` had index 0x18c and key
+`00.01.3180`. The mesh pointer had index 0x190 and hash 0x3200, so its
+zero-offset load had key `00.01.0007`: shifting the base hash by eight
+discarded its high byte. The xor consequently loaded `pos.x` first,
+where retail loads `mesh->x` first. Introducing a real `sint16 num_meshes`
+copy and defining it and the loop counter before the mesh pointer's
+first definition moved the pointer index to 0x192. The predicted hash
+became 0x3240, and the load's key became `00.01.4007`, ahead of `pos.x`.
+The oracle confirmed those exact keys, and a stock build changed only
+the two wanted loads. The copy itself was optimized away. `mesh->z`
+already had rank 1 from its nonzero-offset address, so it stayed first
+without relying on the hash.
 
 ## Opcodes seen in VC6 sort output
 

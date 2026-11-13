@@ -124,10 +124,11 @@ def fold16(v):
 
 # Node classes (byte +8), as the hash 0x4053bf switches on them:
 #  1-3 register/symbol leaf (+0x14 symbol), 4 address of a symbol
-#  (+0x14 front end symbol), 5-6 memory reference (+0x20 offset, +0x24
-#  base node), 7 integer constant (+0x18/+0x1c), 8 constant in memory
+#  (+0x14 front end symbol), 5-6 memory reference (VC5: +0x20 offset,
+#  +0x24 base node; VC6: +0x24 offset, +0x28 base node),
+#  7 integer constant (+0x18/+0x1c), 8 constant in memory
 #  (+0x14 -> value), 9-10 no hash, 11-20 operators (+0x18 operands).
-def describe(node, depth=0):
+def describe(node: int, depth: int = 0) -> str:
     op = rd(node + 4) & 0xFFFF
     cls = rd(node + 8) & 0xFF
     if cls in (1, 2, 3):
@@ -137,8 +138,8 @@ def describe(node, depth=0):
         fe = rd(node + 0x14)
         text = "&%s#%x" % (cstr(rd(fe + 0x18)) or "?", rd(fe + 0x28))
     elif cls in (5, 6):
-        base = rd(node + 0x24)
-        off = rd(node + 0x20)
+        base = rd(node + (0x28 if C2 == "vc6" else 0x24))
+        off = rd(node + (0x24 if C2 == "vc6" else 0x20))
         inner = describe(base, depth + 1) if base and depth < 3 else ""
         text = "[%s%s%s]" % (inner, "+" if inner else "", ("%d" % (off - (1 << 32) if off >> 31 else off)))
     elif cls == 7:
@@ -197,7 +198,7 @@ def after_sort():
             tree(k, 3)
 
 
-def tree(node, indent, depth=0):
+def tree(node: int, indent: int, depth: int = 0) -> None:
     """--raw: every node under NODE with its key, through temps' defining trees."""
     if depth > 6:
         return
@@ -205,8 +206,8 @@ def tree(node, indent, depth=0):
     kids = []
     if cls >= 11:
         kids = list(children(node))
-    elif cls in (5, 6) and rd(node + 0x24):
-        kids = [rd(node + 0x24)]
+    elif cls in (5, 6) and rd(node + (0x28 if C2 == "vc6" else 0x24)):
+        kids = [rd(node + (0x28 if C2 == "vc6" else 0x24))]
     elif cls in (1, 2) and rd(node + 0x14) and rd(rd(node + 0x14) + 0x14):
         kids = [rd(rd(node + 0x14) + 0x14)]
     for k in kids:
