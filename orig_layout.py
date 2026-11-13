@@ -411,6 +411,34 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
         cursor = end
     if code_start not in pieces:
         moved.insert(0, ("(start)", code_start, min(addresses) if addresses else code_start))
+    # The linker drops a function nothing refers to, /INCLUDE or not (the
+    # original's, compiled without /Gy, kept theirs): refer to each from
+    # the filler after a function before it, with an addend that keeps
+    # the filler's bytes.
+    referenced = set()
+    for path in objects:
+        obj = coff.Object(path)
+        for sec in obj.sections:
+            if sec.name.startswith(".debug") or sec.flags & 0xA00:  # never linked
+                continue
+            referenced.update(obj.symbols[i].name for _, i, _ in sec.relocs)
+    keeps, room, hosts = collections.defaultdict(list), {}, []
+    for address in addresses:
+        group = chosen[address]
+        best = group[0]
+        if not best.static and best.name not in referenced and not adopt.get(address):
+            host = next((h for h in reversed(hosts) if room[h] + 4 <= len(pads[h])), None)
+            if host is None:
+                print(f"warning: no filler before {best.name} to keep it by")
+            else:
+                fill, = struct.unpack_from("<I", pads[host], room[host])
+                at = PLACED_AT[best.path, best.section]
+                keeps[host].append((room[host], best.name, (fill - at) & 0xFFFFFFFF))
+                room[host] += 4
+            continue
+        for piece in group:
+            room[piece.path, piece.section] = len(piece.data)
+        hosts.append((best.path, best.section))
 
     os.makedirs(PLACED, exist_ok=True)
     placed = []
@@ -454,6 +482,17 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
                 rewriter.symtab[key * 18 + 16] = coff.CLASS_EXTERNAL
             for alias in aliases.get((path, number), ()):
                 rewriter.add_symbol(alias, 0, number)
+            if keeps.get((path, number)):
+                data = bytearray(data)
+                records = rewriter.section_relocs(number)
+                for offset, target, addend in keeps[path, number]:
+                    struct.pack_into("<I", data, offset, addend)
+                    index = next((i for i, y in enumerate(obj.symbols) if y and y.name == target), None)
+                    if index is None:
+                        index = rewriter.add_undefined(target)
+                    records += struct.pack("<IIH", offset, index, coff.DIR32)
+                rewriter.data[number] = bytes(data)
+                rewriter.relocs[number] = records
         out = os.path.join(PLACED, os.path.basename(path))
         rewriter.write(out)
         placed.append(out)
