@@ -763,6 +763,14 @@ def bind_game_data(placed, sources, original, refs, data_range, kinds=DATA_SECTI
         for index, data in spans.items():
             known = [a for a in each.get(index, ()) if original.read(a, len(data)) == data
                      and data_range[0] <= a <= data_range[1] - len(data)]
+            if not known and data.rstrip(b"\0"):
+                # The span may end in the padding before an aligned
+                # constant, where the original has something else.
+                short = data[:max(len(data.rstrip(b"\0")), (len(data) - 1) // 4 * 4 or 1)]
+                known = [a for a in each.get(index, ()) if original.read(a, len(short)) == short
+                         and data_range[0] <= a <= data_range[1] - len(data)]
+                if len(known) == 1:
+                    spans[index] = short
             if len(known) == 1:
                 at[index] = known[0]
         for index, data in spans.items():
