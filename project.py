@@ -97,6 +97,7 @@ DEFAULTS = {
         "link_bin": "",  # another toolchain's bin for the exe's link (and lib), e.g. an older linker's layout; empty: build.bin
         "libs": ["libc.lib"],
         "import_defs": [],  # .def files of DLLs no library ships an import library for; the link builds them
+        "implib_bin": "",  # the bin whose lib builds import_defs' libraries (an unstamped one leaves them out of the Rich header); empty: link_bin
         "features": {},
         "feature_sources": {},
         "feature_excludes": {},

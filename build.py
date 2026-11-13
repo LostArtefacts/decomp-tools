@@ -414,7 +414,8 @@ def link_exe(objs: list[str], exe_objs: list[str] | None = None,
     made = {}
     for path in EXE_CONFIG["import_defs"]:
         lib = os.path.join(os.path.dirname(exe_objs[0]), os.path.splitext(os.path.basename(path))[0] + ".lib")
-        tool("lib", "/machine:i386", "/def:" + win(path), "/out:" + win(lib), bin=EXE_CONFIG["link_bin"] or None)
+        tool("lib", "/machine:i386", "/def:" + win(path), "/out:" + win(lib),
+             bin=EXE_CONFIG["implib_bin"] or EXE_CONFIG["link_bin"] or None)
         made[os.path.basename(lib).lower()] = win(lib)
     libs = [made.get(lib.lower(), lib) for lib in EXE_CONFIG["libs"]]
     tool("link", *EXE_CONFIG["ldflags"], "/MAP:" + win(EXE_MAP), "/OUT:" + win(EXE),
