@@ -1030,9 +1030,11 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
     for attempt in range(6):
         data = bind_data(placed, data_va, data_size, initial, (text_va, game_end + 1), skip,
                          bindings, data_relocs, split)
-        extra = [filler(name, flags_, size)[0] for name, (flags_, size) in fills.items()]
+        # Data fillers follow the game's own data, code fillers the runtime's.
+        early = [filler(n, f, z)[0] for n, (f, z) in fills.items() if not f & coff.CODE]
+        late = [filler(n, f, z)[0] for n, (f, z) in fills.items() if f & coff.CODE]
         with exe_options(link_order="source", ldflags=flags, libs=libs):
-            build.link_exe([data[0], *placed, *members, *data[1:], *extra], customize=False)
+            build.link_exe([data[0], *placed, *early, *members, *data[1:], *late], customize=False)
         ours = sections(build.EXE)
         exe_map = compare_exe.read_map(build.EXE_MAP)
         shutil.copy(build.EXE_MAP, os.path.join(LAYOUT, f"attempt{attempt}.map"))
@@ -1043,6 +1045,10 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
             if name not in ours or following not in ours:
                 continue
             gap = original.sections[following][0] - ours[following][0]
+            if name == ".rdata" and gap == 0:
+                # The game's constants are short of the original's: make
+                # up the size, so the file's layout follows.
+                gap = original.sections[name][1] - ours[name][1]
             if gap > 0:
                 size = fills.get(name, (flags_, 0))[1] + gap
                 fills[name] = (flags_, size)
