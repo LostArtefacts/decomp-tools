@@ -1195,10 +1195,12 @@ def alignment(flags):
     return 1 << (shift - 1) if shift else 16
 
 
-def runtime_gaps(members, info, split):
+def runtime_gaps(members, info, split, original):
     """Inserts filler objects between runtime members where the original
     leaves more room between their data (or zero-initialized data) than
-    alignment explains: there the original has something the link does not."""
+    alignment explains: there the original has something the link does not.
+    The filler holds the original's bytes, a stand-in for a runtime member
+    this project does not extract."""
     cursors = {".data": split["data_end"], ".bss": split["bss"][1]}
     out, count = [], 0
     for path in members:
@@ -1215,7 +1217,8 @@ def runtime_gaps(members, info, split):
             if base is not None and base > cursor + (-cursor % 16):
                 flags = (DATA_FLAGS if sec.name == ".data" else BSS_FLAGS) & ~ALIGN_MASK | ALIGN_1
                 filler_path = os.path.join(PLACED, f"zzx_gap{count}.obj")
-                coff.write_object(filler_path, [(sec.name, flags, bytes(base - cursor), [])], {}, [], {})
+                filler = original.read(cursor, base - cursor) if sec.name == ".data" else bytes(base - cursor)
+                coff.write_object(filler_path, [(sec.name, flags, filler, [])], {}, [], {})
                 out.append(filler_path)
                 print(f"gap of {base - cursor:#x} before {path} section {number} at {base:#x}")
                 count += 1
@@ -1489,7 +1492,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         for name, address in info["commons"].items():
             bindings.setdefault(name, address)
         split = runtime_split(info, data_va, data_size)
-        members = runtime_gaps(members, info, split)
+        members = runtime_gaps(members, info, split, original)
     fills, skip = {}, 0
     for attempt in range(6):
         data = bind_data(placed, data_va, data_size, initial, (text_va, game_end + 1), skip,
