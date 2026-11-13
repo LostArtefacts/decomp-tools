@@ -47,7 +47,13 @@ def parse_pairs(args):
 
 
 def word(name):
-    return re.compile(rb"\b" + re.escape(name.encode()) + rb"\b")
+    """`name` as a whole word, or behind the underscore of a symbol (_Name)."""
+    return re.compile(rb"(?<![A-Za-z0-9_])(_?)" + re.escape(name.encode()) + rb"\b")
+
+
+def sub(old, new, data):
+    """Renames `old` to `new` in `data`, keeping a symbol's underscore."""
+    return word(old).sub(lambda m: m.group(1) + new.encode(), data)
 
 
 def definition(name):
@@ -91,7 +97,7 @@ def rename_tree(root, pairs, strict=False):
     for path, data in files.items():
         new_data = data
         for old, new in active:
-            new_data = word(old).sub(new.encode(), new_data)
+            new_data = sub(old, new, new_data)
         if new_data != data:
             with open(os.path.join(root, path), "wb") as f:
                 f.write(new_data)
@@ -107,7 +113,7 @@ def rename_message(pairs):
             found = subprocess.run(["git", "grep", "-q", "-E", definition(old).pattern.decode(),
                                     commit, "--", "src/*.c", "src/*.cpp"])
             if found.returncode == 0:
-                message = word(old).sub(new.encode(), message)
+                message = sub(old, new, message)
     sys.stdout.buffer.write(message)
 
 
