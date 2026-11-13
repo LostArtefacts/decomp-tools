@@ -149,14 +149,32 @@ def defined(files, name):
 FUNCTIONS = set(os.environ.get("RENAME_FUNCTIONS", "").split())  # set by --history
 
 
+def code_text(path, data):
+    """`data` with its comments and string literals removed, for a file
+    type `TOKENS` covers; empty for any other file."""
+    tokens = TOKENS.get(os.path.splitext(path)[1].lower())
+    if not tokens:
+        return b""
+    out, at = [], 0
+    for m in tokens.finditer(data):
+        out.append(data[at:m.start()])
+        at = m.end()
+    out.append(data[at:])
+    return b"".join(out)
+
+
 def in_use(files, old, new):
-    """Whether the code (src/, config/) uses `new` for something else:
-    not the name `old`'s symbol spells (DirectSoundCreate for a thunk's
-    _DirectSoundCreate@12)."""
+    """Whether the code (src/'s C/C++/asm, outside comments and string
+    literals, or symbols.csv's name/symbol columns) uses `new` for
+    something else: not the name `old`'s symbol spells (DirectSoundCreate
+    for a thunk's _DirectSoundCreate@12)."""
     spelled = re.compile(r"_?" + re.escape(new) + r"(@\d+)?\Z")
     if any(n == old and spelled.match(symbol) for n, symbol in symbols(files)):
         return False
-    return any(word(new).search(d) for p, d in files.items() if p.startswith(("src/", "config/")))
+    if any(word(new).search(code_text(p, d)) for p, d in files.items() if p.startswith("src/")):
+        return True
+    return any(word(new).search(n.encode()) or word(new).search(symbol.encode())
+              for n, symbol in symbols(files))
 
 
 def rename_tree(root, pairs, strict=False):
