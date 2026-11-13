@@ -526,8 +526,9 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
     for address, _, _, _ in data_relocs:
         own[address - data_start:address - data_start + 4] = b"\1" * 4
     supplied = []
+    used = min(len(initial or b""), (split["data_end"] - data_start) if split else data_size)
     if initial is not None:
-        for at in range(skip, len(initial)):
+        for at in range(skip, used):
             if not own[at]:
                 contents[at] = initial[at]
                 if initial[at]:
@@ -539,7 +540,7 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
                 if name:
                     starts.setdefault(address, name)
         at = skip
-        while at + 4 <= len(initial):
+        while at + 4 <= used:
             value = struct.unpack_from("<I", contents, at)[0]
             if value in starts and not any(own[at:at + 4]):
                 relocs.append((data_start + at, starts[value], coff.DIR32, 0))
