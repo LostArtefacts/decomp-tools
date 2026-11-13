@@ -464,9 +464,13 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
             rewriter.symtab[index * 18:index * 18 + 8] = b".text\0\0\0"
             rewriter.set_flags(number, rewriter.flags(number) | COMDAT)
             rewriter.symtab[(index + 1) * 18 + 14] = 2  # IMAGE_COMDAT_SELECT_ANY
+        empty = orig_runtime.empty_data(obj)
         for number in range(1, len(obj.sections) + 1):
             index = section_symbol(obj, number)
             if (path, number) in removed:
+                rewriter.remove(obj, number)
+                continue
+            if number in empty:
                 rewriter.remove(obj, number)
                 continue
             if (path, number) not in pads:
@@ -1091,6 +1095,21 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
         if table is not None:
             table[path] = min(table.get(path, address), address)
     members = orig_runtime.order(paths, code_at, data_at, bss_at)
+    # A member's empty, aligned data section aligns the next member's data
+    # only where the original has room for it.
+    data_end = {}
+    for (path, number), address in bases.items():
+        sec = objs[path].sections[number - 1]
+        if sec.name == ".data":
+            data_end[path] = max(data_end.get(path, 0), address + len(sec.data))
+    unaligned = set()
+    for i, path in enumerate(members):
+        if path not in objs or not orig_runtime.empty_data(objs[path]):
+            continue
+        before = next((data_end[p] for p in reversed(members[:i]) if p in data_end), None)
+        after = next((data_at[p] for p in members[i + 1:] if p in data_at), None)
+        if before is not None and after is not None and (before + 15) & ~15 > after:
+            unaligned.add(path)
     # A game function the original's linker folded into a runtime function,
     # and a runtime function it folded into a game function.
     starts = {}
@@ -1139,7 +1158,7 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
                 name = rename[index] = f"_layout_{stem}_{index}_{sym.name.lstrip('_')}"
             aliases[owner].append((name, sym.value))
         dropped[path, number] = rename
-    orig_runtime.write(members, Rewriter, aliases, dropped)
+    orig_runtime.write(members, Rewriter, aliases, dropped, unaligned)
     libs = list(build.EXE_CONFIG["libs"])
     last = max(i for i, n in enumerate(libs) if n.lower() in {r.lower() for r in runtime})
     for i in range(last + 1, len(libs)):

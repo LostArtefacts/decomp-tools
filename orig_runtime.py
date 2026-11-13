@@ -301,11 +301,12 @@ def order(paths, code_at, data_at, bss_at=None):
     return ordered
 
 
-def write(paths, rewriter_class, aliases, dropped=()):
+def write(paths, rewriter_class, aliases, dropped=(), unaligned=()):
     """Rewrites the members in place: code sections become `.text$x`,
     aliases {(path, section): [(name, offset)]} are added and the `dropped`
     {(path, section): {symbol index: new name}} are removed (their functions
-    are defined elsewhere, under the new names)."""
+    are defined elsewhere, under the new names). The `unaligned` members
+    lose their empty data sections (empty_data)."""
     for path in paths:
         obj = coff.Object(path)
         rewriter = rewriter_class(path)
@@ -319,7 +320,20 @@ def write(paths, rewriter_class, aliases, dropped=()):
                     rewriter.symtab[index * 18:index * 18 + 8] = CODE_GROUP.encode().ljust(8, b"\0")
             for name, offset in aliases.get((path, number), ()):
                 rewriter.add_symbol(name, offset, number)
+        for number in empty_data(obj) if path in unaligned else ():
+            rewriter.remove(obj, number)
         rewriter.write(path)
+
+
+def empty_data(obj):
+    """The numbers of an object's empty .data and .bss sections that
+    define nothing: an assembler's (ml's, aligned to 16) still align the
+    next object's data."""
+    own = {y.section: i for i, y in enumerate(obj.symbols) if y and y.storage == 3 and y.value == 0
+           and y.section > 0 and y.name == obj.sections[y.section - 1].name}
+    return [number for number, sec in enumerate(obj.sections, 1)
+            if sec.name in (".data", ".bss") and not sec.data and not sec.relocs
+            and not any(y and y.section == number for i, y in enumerate(obj.symbols) if i != own.get(number))]
 
 
 def tail_library(lib_path, out):
