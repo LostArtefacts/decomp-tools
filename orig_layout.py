@@ -912,6 +912,14 @@ def bind_game_data(placed, sources, original, refs, data_range, kinds=DATA_SECTI
                     target, addend = f"_layout_{stem}_s{sym.section}", 0
                 elif index in new_names or sym.storage == coff.CLASS_EXTERNAL:
                     target, addend = new_names.get(index, sym.name), 0
+                elif sym.section > 0 and obj.sections[sym.section - 1].flags & coff.CODE:
+                    # A label in a function, as in a __try's scope table:
+                    # the function's symbol and the label's offset.
+                    _, key = key_symbol(obj, sym.section)
+                    if key is None or key.storage != coff.CLASS_EXTERNAL:
+                        raise ValueError(f"{path}: data at {base + off:#x} points into a function "
+                                         f"with no public symbol, at {sym.name}")
+                    target, addend = key.name, sym.value - key.value
                 else:
                     raise ValueError(f"{path}: data at {base + off:#x} points at a static {sym.name}")
                 addend += struct.unpack_from("<I", obj.sections[number - 1].data, off)[0]
