@@ -1390,7 +1390,8 @@ def order_imports(exe_path, map_path, relocs_path, original):
                 size = len(func) + 3 + (len(func) + 3) % 2
                 names_old.update(range(hint, hint + size))
                 names_new.update(range(new[3], new[3] + size))
-                entry_moves.append((iat, ilt, new[1], new[2], hint, new[3], size))
+                new_ilt = entries[0][2] + new[1] - target[0][1] if ilt is not None else None
+                entry_moves.append((iat, ilt, new[1], new_ilt, hint, new[3], size))
     # The hint/name entries move to the original's places only if they
     # then tile the same bytes.
     keep_names = names_old != names_new
