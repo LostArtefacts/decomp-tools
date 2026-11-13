@@ -100,6 +100,37 @@ through more blocks unused); at equal priority, define X first.
 `c2oracle.py SRC NAME --global` prints the numbers, `--raw` every block's
 contribution, so check the gap before editing.
 
+### Rule C1: repeated literals become candidates, not necessarily registers
+
+The setup at 0x1071732f calls the machine-tuple walker 0x1071a8a6.
+At 0x1071aadd it checks a literal operand's tuple with 0x1071c2c0, then
+interns eligible operands through 0x1071c38e. A new value gets a back end
+symbol of kind 13 (0x1071c523), with its defining expression at +0x28.
+Finding that value again sets symbol byte +5 bit 0x10 (0x1071c446).
+Later, 0x1071b22d checks this bit: an operand without it is restored to a
+literal through 0x10711a0f; a repeated value follows the candidate path.
+
+Checked with `/O2 /G5` and an opaque `Consume(int)` call between two
+independent expressions:
+
+```c
+int f(int x, int y)
+{
+    int a = x & 728;
+    Consume(a);
+    return y & 729;
+}
+```
+
+Here 728 was interned once, then removed, and had no global-allocation
+range. Changing only 729 to 728 gave one new-value event, one reuse
+event, two retained operands, and a `constant{728}` range in the global
+trace. That range was still skipped (weighted references -1, priority
+0). Thus finding a literal in the source, retaining it in the tuple
+stream, counting it in a particular block, and assigning it a register
+are separate decisions. Do not infer the timing of if-conversion just
+from an absent constant in `--global`.
+
 ## Rule L1: scratch registers for what the global allocator left
 
 Picker 0x10734e4b (ecx = tuple, edx = its use), commit 0x10735143
@@ -114,6 +145,19 @@ in code generation order; else the first free of eax ecx edx esi edi
 ebx ebp. An esi/edi load the global list does not explain comes from
 that last path: eax/ecx/edx were all busy. `f(bp[0], bp[1], bp[2])`
 twice: ecx, edx, ecx, edx, ... (eax holds bp).
+
+A source local can change this sequence even when its own generated
+instructions are unchanged. In SkeletonControl, the conditional turn
+limit originally used an implicit copy of a mood value held in ecx.
+The copy preferred ecx, but ecx was still live, so the local picker took
+eax through round robin and advanced the pointer to ecx. Giving the
+conditional result a named `sint16 turn_limit` made it a global range
+(priority 96, assigned eax). The same `mov eax,ecx` then bypassed the
+local picker. The next scratch allocation, an address in case 16, took
+eax instead of ecx, and the later allocations rotated accordingly.
+Paired `--regs --raw` traces agreed through the preceding 90 allocation
+events and identified this missing event directly. Thus identical bytes
+at an edited expression do not prove unchanged allocator state.
 
 ## Rule S1: commutative operand order and compares
 
