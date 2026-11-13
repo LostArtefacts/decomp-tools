@@ -26,7 +26,9 @@ config/symbols.csv records for it:
 3. Data. bind_game_data() finds where the game objects' own data and
    zero-initialized sections (strings, statics) were in the original,
    from what matching code points at, symbols.csv or their contents, and
-   removes them. bind_data() then writes 000_data.obj: the original's
+   removes them. It does the same for their constants (.rdata), which
+   bind_rdata() puts in 000_rdata.obj, before data-only library members
+   (dxguid) and the runtime's constants. bind_data() then writes 000_data.obj: the original's
    data section, with every symbols.csv global the objects need, those
    sections' symbols, and every word that is a recovered function's
    address as a relocation to it. With initial_data="original" it holds
@@ -40,6 +42,11 @@ config/symbols.csv records for it:
 4. Layout. The link is repeated, with filler after .text and .rdata and
    room for the runtime's tables, until the bound globals sit at their
    original addresses.
+
+5. Imports. The linker orders each DLL's imports its own way, so a link
+   with base relocations finds every pointer to an import slot, and
+   order_imports() puts the slots and their names in the original's
+   order.
 
 Intermediate files and reports go to build/layout/.
 """
@@ -1128,6 +1135,116 @@ def bind_rdata(path, start, end, original, bindings, relocs, contents, fallback)
     return path
 
 
+def base_relocations(path):
+    """The addresses of a PE image's HIGHLOW base relocations."""
+    pe = compare_exe.PE(path)
+    rva, size = pe.directory(5)
+    sites, at = [], pe.offset(pe.base + rva)
+    end = at + size
+    while at < end:
+        page, block = struct.unpack_from("<II", pe.data, at)
+        if not block:
+            break
+        for i in range((block - 8) // 2):
+            entry, = struct.unpack_from("<H", pe.data, at + 8 + 2 * i)
+            if entry >> 12 == 3:
+                sites.append(pe.base + page + (entry & 0xFFF))
+        at += block
+    return sites
+
+
+def import_tables(pe):
+    """{dll: (descriptor offset, [(name, IAT address, ILT address, hint/name address)])}."""
+    rva, _ = pe.directory(1)
+    out, at = {}, pe.offset(pe.base + rva)
+    while True:
+        ilt, _, _, name, iat = struct.unpack_from("<IIIII", pe.data, at)
+        if not name:
+            return out
+        entries, n = [], 0
+        while True:
+            value, = struct.unpack_from("<I", pe.data, pe.offset(pe.base + (ilt or iat) + 4 * n))
+            if not value:
+                break
+            func = f"#{value & 0xFFFF}" if value & 0x80000000 else pe.cstr(pe.base + value + 2)
+            entries.append((func, pe.base + iat + 4 * n, pe.base + ilt + 4 * n if ilt else None,
+                            None if value & 0x80000000 else pe.base + value))
+            n += 1
+        out[pe.cstr(pe.base + name).upper()] = (at, entries)
+        at += 20
+
+
+def order_imports(exe_path, map_path, relocs_path, original):
+    """Rewrites a linked image's import tables in the original's order:
+    each DLL's IAT and lookup table slots, and the hint/name entries where
+    the original has them, moving every pointer to a slot (from the base
+    relocations of relocs_path, the same link without /FIXED) and the
+    map's __imp_ symbols along. A DLL whose functions differ from the
+    original's is left alone. Returns the number of slots moved."""
+    pe = compare_exe.PE(exe_path)
+    data = bytearray(pe.data)
+    theirs, ours = import_tables(original), import_tables(pe)
+    slots, moved = {}, 0  # old IAT address: new
+    names_old, names_new = set(), set()
+    entry_moves = []  # (old hint/name address, new, size)
+    for dll, (_, entries) in ours.items():
+        if dll not in theirs:
+            continue
+        target = theirs[dll][1]
+        if sorted(e[0] for e in entries) != sorted(e[0] for e in target) or entries[0][1] != target[0][1]:
+            print(f"warning: {dll}'s imports differ from the original's; left in the link's order")
+            continue
+        where = {e[0]: e for e in target}
+        for func, iat, ilt, hint in entries:
+            new = where[func]
+            slots[iat] = new[1]
+            if iat != new[1]:
+                moved += 1
+            if hint is not None:
+                size = len(func) + 3 + (len(func) + 3) % 2
+                names_old.update(range(hint, hint + size))
+                names_new.update(range(new[3], new[3] + size))
+                entry_moves.append((iat, ilt, new[1], new[2], hint, new[3], size))
+    # The hint/name entries move to the original's places only if they
+    # then tile the same bytes.
+    keep_names = names_old != names_new
+    if keep_names:
+        print("warning: the hint/name entries do not fit the original's layout; left in place")
+    old_bytes = bytes(data)
+    for iat, ilt, new_iat, new_ilt, hint, new_hint, size in entry_moves:
+        name_at = hint if keep_names else new_hint
+        if not keep_names:
+            data[pe.offset(new_hint):pe.offset(new_hint) + size] = old_bytes[pe.offset(hint):pe.offset(hint) + size]
+        for old, new in ((iat, new_iat), (ilt, new_ilt)):
+            if new is not None:
+                struct.pack_into("<I", data, pe.offset(new), name_at - pe.base)
+    relocated = compare_exe.PE(relocs_path)
+    count = 0
+    for site in base_relocations(relocs_path):
+        value = relocated.read(site, 4)
+        if value != pe.read(site, 4):
+            raise ValueError(f"the link without /FIXED differs at {site:#x}")
+        target, = struct.unpack("<I", value)
+        if target in slots and slots[target] != target:
+            struct.pack_into("<I", data, pe.offset(site), slots[target])
+            count += 1
+    with open(exe_path, "wb") as f:
+        f.write(data)
+    with open(map_path, encoding="latin-1") as f:
+        lines = f.read().splitlines()
+    line_re = re.compile(r"^(\s*[0-9a-f]{4}:)([0-9a-f]{8})(\s+)(__imp_\S+)(\s+)([0-9a-f]{8})(.*)$")
+    for i, line in enumerate(lines):
+        m = line_re.match(line)
+        if m and int(m.group(6), 16) in slots:
+            address = slots[int(m.group(6), 16)]
+            offset = int(m.group(2), 16) + address - int(m.group(6), 16)
+            lines[i] = f"{m.group(1)}{offset:08x}{m.group(3)}{m.group(4)}{m.group(5)}{address:08x}{m.group(7)}"
+    with open(map_path, "w", encoding="latin-1") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"moved {moved} import slots to the original's order, {count} pointers to them")
+    return moved
+
+
 def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=(), data_libraries=()):
     """Links build/<name>.exe from the exe's objects in the original's layout.
     extra_rows are (address, size, [symbols]) rows for functions symbols.csv
@@ -1189,8 +1306,8 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         early = [filler(n, f, z)[0] for n, (f, z) in fills.items() if not f & coff.CODE]
         late = [filler(n, f, z)[0] for n, (f, z) in fills.items() if f & coff.CODE]
         with exe_options(link_order="source", ldflags=flags, libs=libs):
-            build.link_exe([data[0], *constants, *placed, *[p for _, p in guids], *early, *members,
-                            *data[1:], *late], customize=False)
+            inputs = [data[0], *constants, *placed, *[p for _, p in guids], *early, *members, *data[1:], *late]
+            build.link_exe(inputs, customize=False)
         ours = sections(build.EXE)
         exe_map = compare_exe.read_map(build.EXE_MAP)
         shutil.copy(build.EXE_MAP, os.path.join(LAYOUT, f"attempt{attempt}.map"))
@@ -1232,6 +1349,14 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
                 changed = True
         if not changed:
             break
+    # The linker orders each DLL's imports its own way: link again with
+    # base relocations (an exe's default is /FIXED) to find every pointer
+    # to them, and reorder.
+    relocs_exe = os.path.join(LAYOUT, "relocs.exe")
+    with exe_options(link_order="source", ldflags=[f for f in flags if f.upper() != "/FIXED"] + ["/FIXED:NO"], libs=libs,
+                     exe=relocs_exe, exe_map=os.path.join(LAYOUT, "relocs.map")):
+        build.link_exe(inputs, customize=False)
+    order_imports(build.EXE, build.EXE_MAP, relocs_exe, original)
     report(ours, original, data_va + skip)
 
 
