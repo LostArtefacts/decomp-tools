@@ -23,8 +23,10 @@ together; such a commit's subject is `Decompile A and B`, in address
 order. The functions that matched before are the ones HEAD's
 docs/progress.svg shows as matching, so it needs hooks.progress. A
 commit that adds one has the subject `Decompile NAME (0xADDRESS)`, with
-the function's name and address from config/symbols.csv; any other
-commit has a subject that doesn't start with `Decompile `. Amending a
+the function's name and address from config/symbols.csv; one that makes
+a function hooks.allow_diff listed at HEAD match has the subject
+`Match NAME`. Any other commit has a subject that starts with neither
+`Decompile ` nor `Match `. Amending a
 commit with the same subject passes.
 
 A group of functions that only match together lands one function per
@@ -168,12 +170,14 @@ def pre_commit():
         before = matched_at_head()
         if before is not None:
             by_address = {a: n for a, n in names.values()}
+            red = allow_diff_at_head()
             new = sorted(a for a in matched - before if by_address[a] not in allowed)
-            old = allow_diff_at_head() | before
+            old = red | before
             new += sorted({a for a, n in names.values() if n in listed and a not in old})
             with open(path, "w") as f:
                 for address in new:
-                    f.write(f"{address:#x} {by_address[address]}\n")
+                    kind = " match" if address in red and address in matched else ""
+                    f.write(f"{address:#x} {by_address[address]}{kind}\n")
     return 0
 
 
@@ -198,15 +202,18 @@ def commit_msg(message_file):
             print(f"  {address} {name}")
         return 1
     if new:
-        address, name = new[0]
-        want = f"Decompile {name} ({address})"
+        address, name = new[0][:2]
+        if new[0][2:] == ["match"]:
+            want, what = f"Match {name}", "matches"
+        else:
+            want, what = f"Decompile {name} ({address})", "decompiles"
         if subject != want:
-            print(f"commit-msg: the commit decompiles {name}; its subject must be: {want}")
+            print(f"commit-msg: the commit {what} {name}; its subject must be: {want}")
             return 1
-    elif subject.startswith("Decompile "):
+    elif subject.startswith(("Decompile ", "Match ")):
         head = git("log", "-1", "--format=%s", check=False).stdout.strip()
         if subject != head:
-            print("commit-msg: no function newly matches, but the subject starts with Decompile")
+            print(f"commit-msg: no function newly matches, but the subject starts with {subject.split()[0]}")
             return 1
     return 0
 
