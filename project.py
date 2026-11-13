@@ -322,15 +322,29 @@ def game_le():
     patch_le.patch(HOOKED)
 
 
+def feature_path(path, feats):
+    """`path` (build/<name>.exe or its map) for an exe built with `feats`:
+    build.py exe keeps a feature build apart from the vanilla one, as
+    build/<name>_<features>.exe."""
+    if not feats:
+        return path
+    stem, ext = os.path.splitext(path)
+    return f"{stem}_{'_'.join(sorted(feats))}{ext}"
+
+
 def standalone():
     """Copies the standalone exe into build/game as <name>_standalone.exe
     (le: as STANDALONE_LE next to game.hooked, a DOS 8.3 name), with
-    game.standalone_extras."""
+    game.standalone_extras. With FEAT set (pe), it copies the exe
+    build.py exe linked with those features instead."""
+    exe = EXE
     if FORMAT == "le":
         dest = os.path.join(os.path.dirname(HOOKED), STANDALONE_LE)
     else:
         dest = os.path.join(GAME, f"{NAME}_standalone.exe")
-    shutil.copyfile(EXE, dest)
+        feats = {f.strip() for f in os.environ.get("FEAT", "").split(",") if f.strip()}
+        exe = feature_path(EXE, feats)
+    shutil.copyfile(exe, dest)
     for pattern in config["game"]["standalone_extras"]:
         for path in sorted(glob.glob(pattern)):
             shutil.copy(path, GAME)

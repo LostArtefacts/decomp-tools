@@ -457,11 +457,8 @@ def main():
             print("features:", ", ".join(feats))
             # Keep a feature build from overwriting the vanilla exe, like
             # build/obj_<features> keeps its objects apart.
-            suffix = "_".join(feats)
-            stem, ext = os.path.splitext(EXE)
-            EXE = f"{stem}_{suffix}{ext}"
-            mstem, mext = os.path.splitext(EXE_MAP)
-            EXE_MAP = f"{mstem}_{suffix}{mext}"
+            EXE = project.feature_path(EXE, feats)
+            EXE_MAP = project.feature_path(EXE_MAP, feats)
         if GL:
             # /GL objects hold no code to order them by: the plain ones do.
             link_exe(compile_all(EXE, feats=feats), compile_all(EXE, True, feats), feats)
