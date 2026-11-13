@@ -210,6 +210,7 @@ puts it on `main` at the same commit.
 | `fn.py` | everything about one function in one call, and the order to do them in |
 | `permute.py` | searches rewrites of one function (declaration order, operand order, statement order, if/else) for a byte match, compiling each variant alone |
 | `farm.py` | runs permute.py over every hooks.allow_diff function, several at once, unattended; keeps matching bodies in build/farm, and `--apply` writes them into src/ |
+| `c2oracle.py` | traces MSVC's back end (VC5's C2.EXE or VC6's c2.dll) on one function under winedbg: global register allocation, local register picks, the operand sort, the x87 pass and VC6's list scheduler; the models behind its output are docs/vc5-c2.md and docs/vc6-c2.md |
 | `lefn.py` | the LE side of `fn.py` and `permute.py`: one function placed through its module as `compare_le.py` does, masked and unmasked diffs, and the scorer that compiles one variant with `wcc386` |
 | `rpermute.py` | runs permute.py on project.toml's [remote] machine, such as a faster Windows box, and copies its result back |
 | `asmgen.py` | writes MASM source for functions no compiler wrote (hand-written patches) from the exe's bytes, with symbols for calls, data and imports, checked byte for byte |

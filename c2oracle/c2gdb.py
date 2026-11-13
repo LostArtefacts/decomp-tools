@@ -1,9 +1,11 @@
-"""gdb side of c2oracle.py: breakpoints in C2.EXE (VC5 SP3, 11.00.7022).
+"""gdb side of c2oracle.py: breakpoints in C2.EXE (VC5 SP3, 11.00.7022)
+or c2.dll (VC6 SP3, 12.00.8168).
 
 Loaded with `gdb -x`; reads its settings from the environment
-(C2O_PORT, C2O_FUNC, C2O_WHAT, C2O_RAW). Every line meant for the user
-starts with "| " (or "== " for a function header). The addresses and
-structure offsets are documented in ../docs/vc5-c2.md.
+(C2O_PORT, C2O_FUNC, C2O_WHAT, C2O_RAW, C2O_C2 = vc5 or vc6). Every line
+meant for the user starts with "| " (or "== " for a function header).
+The addresses and structure offsets are documented in ../docs/vc5-c2.md
+and ../docs/vc6-c2.md; each back end's are in ADDR below.
 """
 import os
 
@@ -12,12 +14,44 @@ import gdb
 FUNC = os.environ["C2O_FUNC"]
 WHAT = set(os.environ.get("C2O_WHAT", "sort").split(","))
 RAW = bool(os.environ.get("C2O_RAW"))
+C2 = os.environ.get("C2O_C2", "vc5")
 
-CUR_FUNC = 0x495F1C  # the function being compiled (a front end symbol)
+# Where each back end decides things. c2.dll is VC5's C2.EXE rebuilt with
+# small changes: the structures carry over, the addresses and some of the
+# registers do not. None: not located in that back end.
+ADDR = {
+    "vc5": dict(
+        cur_func=0x495F1C,  # the function being compiled (a front end symbol)
+        sort=0x4052F9,
+        picker=0x435C37, assign=0x435F38, rot_reset=0x42A90E,
+        rotation=0x491120, prefs=0x491100,
+        paths={0x435CF9: "round robin", 0x435DB5: "preferred", 0x435E74: "first free", 0x435E22: "evicted"},
+        regtab=0x494758, regstride=0x50,
+        color=0x41A985, split=0x4171C8, assigned=0x4171E2, skipped=None, round=None,
+        block=0x40F6DE, use=(0x40F70F, 0x40F745), thru=0x40F72C, weight_reg="edx",
+        inline=True, x87=True, sched=None,
+        sched_pass=0x49321C, sched_nodes=0x4930B0, sched_took=0x4316CA, sched_region=0x40DA6A,
+    ),
+    "vc6": dict(
+        cur_func=0x107AC378,
+        sort=0x10709451,
+        picker=0x10734E4B, assign=0x10735143, rot_reset=0x10733637,
+        rotation=0x1079D710, prefs=0x107ADFF4,
+        paths={0x10734F18: "round robin", 0x10734FC7: "preferred", 0x1073513B: "first free", 0x10735061: "evicted"},
+        regtab=0x107AC730, regstride=0x54,
+        color=0x107159AF, split=0x1072090A, assigned=0x10720930, skipped=0x10720874, round=0x107207E6,
+        block=0x10714414, use=(0x10714C06, 0x10714C2E), thru=0x10714C53, weight_reg="esi",
+        inline=False, x87=False, sched=True,
+        sched_pass=0x1079F270, sched_nodes=0x1079F248, sched_took=0x1073C05E, sched_region=0x1073A0AA,
+    ),
+}[C2]
+CUR_FUNC = ADDR["cur_func"]
 
 OPS = {
     0x11F: "const", 0x120: "sym", 0x135: "and", 0x136: "or", 0x137: "xor",
     0x141: "add", 0x143: "mul", 0x14B: "shr", 0x14A: "shl", 0x14C: "sar",
+} if C2 == "vc5" else {
+    0x16D: "add", 0x171: "shl", 0x172: "and", 0x173: "or", 0x15A: "arg", 0x184: "call",
 }
 
 inf = None
@@ -54,7 +88,7 @@ def in_func():
 
 
 def out(text=""):
-    print("| " + text)
+    print("| " + text, flush=True)
 
 
 # Tree nodes: +0 next operand, +4 opcode, +8 type, +0xc sort key,
@@ -72,10 +106,14 @@ def opname(op):
     return OPS.get(op, "op%x" % op)
 
 
-def symbol(sym):
-    """Back end symbol -> 'name#id' or 'temp@slot' (byte +4 == 3: a temp)."""
+def symbol(sym, depth=0):
+    """Back end symbol -> 'name#id' or 'temp@slot' (byte +4 == 3: a temp);
+    a temp the optimiser made for an expression shows it in braces."""
     if (rd(sym + 4) & 0xFF) == 3:
-        return "temp@%d" % rd(sym + 0x1C)
+        text = "temp@%d" % rd(sym + 0x1C)
+        if C2 == "vc6" and depth == 0 and rd(sym + 0x14):
+            text += "{" + describe(rd(sym + 0x14), 2) + "}"
+        return text
     fe = rd(rd(sym + 8))
     return "%s#%x" % (cstr(rd(fe + 0x18)) or "?", rd(fe + 0x28))
 
@@ -94,7 +132,7 @@ def describe(node, depth=0):
     cls = rd(node + 8) & 0xFF
     if cls in (1, 2, 3):
         sym = rd(node + 0x14)
-        text = symbol(sym) if sym else "reg(op %x)" % op
+        text = symbol(sym, depth) if sym else "reg(op %x)" % op
     elif cls == 4:
         fe = rd(node + 0x14)
         text = "&%s#%x" % (cstr(rd(fe + 0x18)) or "?", rd(fe + 0x28))
@@ -177,8 +215,8 @@ def tree(node, indent, depth=0):
 
 
 REGS = {1: "eax", 2: "ecx", 3: "edx", 4: "ebx", 5: "esp", 6: "ebp", 7: "esi", 8: "edi"}
-ROTATION = 0x491120  # -> next entry of the preference table 0x491100
-PREFS = 0x491100  # 1 2 3 7 8 4 6 0: eax ecx edx esi edi ebx ebp
+ROTATION = ADDR["rotation"]  # -> next entry of the preference table
+PREFS = ADDR["prefs"]  # 1 2 3 7 8 4 6 0: eax ecx edx esi edi ebx ebp
 pick = {}
 
 
@@ -197,13 +235,11 @@ def picker():
             REGS.get(rd(pref + 0x1C), "-") if pref else "-", rd(rec + 0x1C)))
 
 
-# Where 0x435f38 was called from: how the register was found.
-PATHS = {
-    0x435CF9: "round robin",  # next free of eax ecx edx from the rotation pointer
-    0x435DB5: "preferred",  # the value's own preferred register (+0x2c)
-    0x435E74: "first free",  # first free in eax ecx edx esi edi ebx ebp
-    0x435E22: "evicted",  # 0x45d93e freed one
-}
+# Where the commit was called from: how the register was found. Round
+# robin: next free of eax ecx edx from the rotation pointer; preferred:
+# the value's own preferred register (+0x2c); first free: in eax ecx edx
+# esi edi ebx ebp; evicted: a register was freed for it.
+PATHS = ADDR["paths"]
 
 
 def assign():
@@ -295,40 +331,65 @@ def range_reg(rng):
     p = rd(rng + 0x10)
     if not p:
         return "memory"
-    return GREGS.get((p - 0x494758) // 0x50, "?%x" % p)
+    return GREGS.get((p - ADDR["regtab"]) // ADDR["regstride"], "?%x" % p)
 
 
 def glob_block():
-    # 0x40f6de: a block's references were counted, about to fold them into
-    # the priorities; the multiplier is 1 << (loop depth + 1)
+    # a block's references were counted, about to fold them into the
+    # priorities. VC5: the multiplier is 1 << (loop depth + 1), in edi;
+    # VC6: 1 << loop depth, in eax, the block in ebp.
+    if C2 == "vc6":
+        out("  block %x: multiplier %d" % (reg("ebp"), reg("eax")))
+        return
     blk = rd(reg("esp") + 0x20)
     out("  block %x: depth %d, multiplier %d" % (blk, sx16(rd(blk + 0x86, 2)), reg("edi")))
 
 
 def glob_use():
     rng = reg("eax")
-    out("    %s referenced: %d + %d * %d" % (range_name(rng), sx32(rd(rng + 0xC)), reg("edx"), rd(rng + 0x18)))
+    out("    %s referenced: %d + %d * %d" % (range_name(rng), sx32(rd(rng + 0xC)), reg(ADDR["weight_reg"]), rd(rng + 0x18)))
 
 
 def glob_thru():
     rng = reg("eax")
-    out("    %s live through: %d - %d" % (range_name(rng), sx32(rd(rng + 0xC)), reg("edx")))
+    out("    %s live through: %d - %d" % (range_name(rng), sx32(rd(rng + 0xC)), reg(ADDR["weight_reg"])))
+
+
+COLORED = []
 
 
 def glob_color():
     rng = reg("edx")
     glob_color.cur = rng
+    if rng not in COLORED:
+        COLORED.append(rng)
     out("%-24s priority %6d  position %4d  refs %3d  weighted %5d" % (
         range_name(rng), sx32(rd(rng + 0xC)), rd(rng + 0x40), rd(rng + 0x24), sx32(rd(rng + 0x3C))))
 
 
 def glob_split():
     if reg("eax"):
-        out("    (split: the ranges it conflicts with get pieces)")
+        # VC6: 0x107159af could not color the whole range; it is split and
+        # its pieces go back on the list (their spill and reload code is
+        # inserted when the next round starts)
+        out("    (split)" if C2 == "vc6" else "    (split: the ranges it conflicts with get pieces)")
 
 
 def glob_assigned():
     out("    -> %s" % range_reg(reg("esi")))
+
+
+def glob_skip():
+    # VC6 0x10720874: a range with weighted references <= 0 stays in memory
+    rng = reg("esi")
+    out("%-24s skipped (weighted %d, priority %d)" % (range_name(rng), sx32(rd(rng + 0x3C)), sx32(rd(rng + 0xC))))
+
+
+def glob_final():
+    # at the local allocator's start: what every colored range ended with
+    if COLORED:
+        out("-- final: " + ", ".join("%s=%s" % (range_name(r), range_reg(r)) for r in COLORED))
+        COLORED.clear()
 
 
 def sx32(v):
@@ -350,21 +411,101 @@ def sched_tuple(t):
         return "op%x(?)" % (rd(t + 4) & 0xFFFF)
 
 
+def operand(node, depth=0):
+    """VC6, after register allocation: a machine operand (register leaf,
+    variable, [base+offset], constant)."""
+    try:
+        op = rd(node + 4) & 0xFFFF
+        cls = rd(node + 8) & 0xFF
+        if cls == 1:
+            r = rd(node + 0x18)
+            if ADDR["regtab"] <= r < ADDR["regtab"] + 9 * ADDR["regstride"]:
+                return GREGS.get((r - ADDR["regtab"]) // ADDR["regstride"], "?")
+            return symbol(rd(node + 0x14), 1) if rd(node + 0x14) else "reg?"
+        if cls == 2:
+            text = symbol(rd(node + 0x14), 1) if rd(node + 0x14) else "mem?"
+            if RAW:
+                text += "{%x.%x}" % (rd(node + 0x10) & 0xFFFF, rd(node + 0x1C))
+            return text
+        if cls in (5, 6):
+            base = rd(node + 0x28)
+            off = sx32(rd(node + 0x24))
+            inner = operand(base, depth + 1) if base and depth < 2 else ""
+            if RAW:
+                inner = "%x.%x:" % (rd(node + 0x10) & 0xFFFF, rd(node + 0x1C)) + inner
+            return "[%s%s]" % (inner, ("%+d" % off) if inner else "%d" % off) if off or not inner else "[%s]" % inner
+        if cls == 7:
+            return "%d" % sx32(rd(node + 0x18))
+        return "op%x" % op
+    except gdb.error:
+        return "?"
+
+
+# VC6 machine tuple opcodes seen in scheduled blocks
+MNEMONICS6 = {0x1: "mov", 0x8: "ret", 0xD: "push", 0xE: "call", 0xF: "jcc", 0x10: "jmp", 0x12: "lea",
+              0x2D: "add", 0xB9: "pop", 0xBA: "push", 0xC1: "imul"}
+
+
+def sched_tuple6(t):
+    ops = [operand(c) for c in children(t)]
+    dest = rd(t + 0x1C)
+    op = rd(t + 4) & 0xFFFF
+    return "%s %s%s" % (MNEMONICS6.get(op, "op%x" % op), (operand(dest) + " <- ") if dest else "", ", ".join(ops))
+
+
 def sched_took():
-    if rd(0x49321C) != 1:
+    if C2 == "vc5" and rd(ADDR["sched_pass"]) != 1:
         return
     for j in range(max(0, min(reg("eax"), 4))):
-        n = rd(0x4930B0 + 4 * j)
-        SCHED[rd(n + 0x36, 2)] = (len(SCHED) + 1, rd(n + 0x2C), sched_tuple(rd(n + 0x1C)))
+        n = rd(ADDR["sched_nodes"] + 4 * j)
+        SCHED[rd(n + 0x36, 2)] = (len(SCHED) + 1, rd(n + 0x2C), (sched_tuple6 if C2 == "vc6" else sched_tuple)(rd(n + 0x1C)), n)
+
+
+# VC6 cycle picker 0x1073c17b (ecx = cycle): walks the ready list from
+# the head and takes a node unless the pairing hook [0x10799214] returns
+# < 0 for it (0x1073c1e8), 0x1073c4ad objects (0x1073c1fb), the register
+# check 0x1073c505 objects (0x1073c223, only when [0x107ac0b0] is set) or
+# its earliest cycle +0x30 is later than the cycle plus the busy time of
+# its unit (0x1073c245). Under --raw, each decision is printed.
+TRACE = []
+
+
+def pick_why(why):
+    def f():
+        n = reg("esi")
+        TRACE.append("cycle %d: %d %s" % (rd(reg("esp") + 0x18), rd(n + 0x36, 2), why()))
+    return f
+
+
+def pick_pipe():
+    v = reg("eax") & 0xFFFF
+    return "pairing class %d%s" % (sx16(v), " -> rejected" if v & 0x8000 else "")
 
 
 def sched_region():
+    if RAW and C2 == "vc6" and SCHED:
+        w = rd(0x10799204)
+        out("-- priority shifts: %s" % " ".join("%d" % sx16(rd(w + 2 * i, 2)) for i in range(7)))
+    if TRACE:
+        out("-- picker: cycle: IL position, decision")
+        for line in TRACE:
+            out("  " + line)
+        TRACE.clear()
     if not SCHED:
         return
-    out("-- pre-pass block, in IL order: IL position, scheduled position, priority, tuple")
+    out("-- %s block, in IL order: IL position, scheduled position, priority, tuple" % (
+        "pre-pass" if C2 == "vc5" else "scheduled"))
     for s in sorted(SCHED):
-        k, prio, text = SCHED[s]
-        out("  %3d -> %3d  %8d  %s" % (s, k, prio, text if len(text) < 160 else text[:157] + "..."))
+        k, prio, text, n = SCHED[s]
+        if RAW and C2 == "vc6":
+            # DAG node +0xc: successor edges (+0 next, +0xc node, +0x14 latency)
+            succ, e = [], rd(n + 0xC)
+            while e and len(succ) < 64:
+                succ.append("%d/%d%s" % (rd(rd(e + 0xC) + 0x36, 2), rd(e + 0x14, 2), "" if rd(e + 0x10) == 1 else ":%x" % rd(e + 0x10)))
+                e = rd(e)
+            text += "   [t %x] h %d s %d f %02x %02x -> %s" % (rd(n + 0x1C), rd(n + 0x34, 2), rd(n + 0x22, 2), rd(n + 0x39, 1), rd(n + 0x3A, 1),
+                                                     " ".join(succ))
+        out("  %3d -> %3d  %8x  %s" % (s, k, prio, text if len(text) < 160 or RAW else text[:157] + "..."))
     SCHED.clear()
 
 
@@ -374,13 +515,22 @@ def main():
     gdb.execute("set confirm off")
     gdb.execute("target remote :%s" % os.environ["C2O_PORT"])
     inf = gdb.selected_inferior()
+    if C2 == "vc6":
+        # cl.exe runs c2.dll in process: the stand-in stops on an int 3
+        # once it has loaded it (image base 0x10700000, no relocation)
+        for _ in range(20):
+            try:
+                rd(0x10701000)
+                break
+            except gdb.error:
+                gdb.execute("continue")
     if "sort" in WHAT:
-        Stop(0x4052F9, after_sort)
+        Stop(ADDR["sort"], after_sort)
     if "regs" in WHAT:
-        Stop(0x435C37, picker)
-        Stop(0x435F38, assign)
-        Stop(0x42A90E, lambda: out("-- rotation reset to eax"))
-    if "inline" in WHAT:
+        Stop(ADDR["picker"], picker)
+        Stop(ADDR["assign"], assign)
+        Stop(ADDR["rot_reset"], lambda: out("-- rotation reset to eax"))
+    if "inline" in WHAT and ADDR["inline"]:
         Stop(0x424946, inl_start)
         Stop(0x424EEF, inl_site)
         Stop(0x424A67, inl_refuse("arguments, depth, size or total"))
@@ -390,18 +540,29 @@ def main():
         Stop(0x424F79, inl_take)
         Stop(0x424BF5, inl_child)
         Stop(0x424C10, inl_used)
-    if "x87" in WHAT:
-        Stop(0x4316CA, sched_took)
-        Stop(0x40DA6A, sched_region)
+    if ("x87" in WHAT and ADDR["x87"]) or ("sched" in WHAT and ADDR["sched"]):
+        Stop(ADDR["sched_took"], sched_took)
+        Stop(ADDR["sched_region"], sched_region)
+        if RAW and C2 == "vc6":
+            Stop(0x1073C1E8, pick_why(pick_pipe))
+            Stop(0x1073C1FB, pick_why(lambda: "0x1073c4ad says %d" % reg("eax")))
+            Stop(0x1073C223, pick_why(lambda: "register check says %d" % reg("eax")))
+            Stop(0x1073C245, pick_why(lambda: "earliest %d, cycle + busy %d" % (reg("eax"), reg("edx"))))
+            Stop(0x1073C255, pick_why(lambda: "TAKEN"))
     if "global" in WHAT:
-        Stop(0x41A985, glob_color)
-        Stop(0x4171C8, glob_split)
-        Stop(0x4171E2, glob_assigned)
+        if ADDR["round"]:
+            Stop(ADDR["round"], lambda: out("-- round (pieces of the split range get their loads and stores)"))
+        Stop(ADDR["color"], glob_color)
+        Stop(ADDR["split"], glob_split)
+        Stop(ADDR["assigned"], glob_assigned)
+        if ADDR["skipped"]:
+            Stop(ADDR["skipped"], glob_skip)
+        Stop(ADDR["rot_reset"], glob_final)
         if RAW:
-            Stop(0x40F6DE, glob_block)
-            Stop(0x40F70F, glob_use)
-            Stop(0x40F745, glob_use)
-            Stop(0x40F72C, glob_thru)
+            Stop(ADDR["block"], glob_block)
+            for a in ADDR["use"]:
+                Stop(a, glob_use)
+            Stop(ADDR["thru"], glob_thru)
     print("== %s" % FUNC)
     gdb.execute("continue")
 
