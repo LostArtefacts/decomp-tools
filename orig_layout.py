@@ -894,10 +894,15 @@ def bind_game_data(placed, sources, original, refs, data_range, kinds=DATA_SECTI
                 name = sym.name
                 if sym.storage != coff.CLASS_EXTERNAL:
                     name = rename[index] = f"_layout_{stem}_{index}"
-                new_names[index] = name
                 address = base + sym.value if isinstance(base, int) else base[index]
                 if bindings.setdefault(name, address) != address:
-                    raise ValueError(f"{name} is bound at {bindings[name]:#x} and {address:#x}")
+                    if not obj.sections[number - 1].flags & COMDAT:
+                        raise ValueError(f"{name} is bound at {bindings[name]:#x} and {address:#x}")
+                    # The original has this constant twice (its compiler
+                    # did not fold them): this object's copy is its own.
+                    name = rename[index] = f"_layout_{stem}_{index}"
+                    bindings[name] = address
+                new_names[index] = name
             rewriter.remove(obj, number, rename)
         for number, base in plan.items():
             for index, data in loose_contents.get((path, number), {}).items():
