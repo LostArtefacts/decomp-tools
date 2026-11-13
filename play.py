@@ -12,8 +12,11 @@ Steps run in order:
     fit              resize the game window to the screen (Wine shows a
                      fullscreen game in its window, which can stay 0x0)
 
---exe runs build/game/NAME instead of the patched <name>.exe, and
---standalone the standalone build, <name>_standalone.exe there (<name>
+--exe runs build/game/NAME instead of the patched <name>.exe; NAME can
+also be a path outside build/game (relative to it, such as
+../../build/<name>_<features>.exe, build.py exe's own feature build) to
+run an exe that was never copied there. --standalone runs the
+standalone build, <name>_standalone.exe there (<name>
 is game.name in project.toml; le: STANDALN.EXE next to game.hooked, in
 DOSBox). With no steps the game starts on a fresh
 Xvfb display, and a screenshot is taken after 15 seconds. The hook log

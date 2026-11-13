@@ -24,7 +24,9 @@ use, then give the link order.
 
 FEAT (a comma-separated list) turns on the exe's optional features,
 exe.features in project.toml: `FEAT=frame_cap build.py exe` compiles
-with /DFEAT_FRAME_CAP=1 into build/obj_frame_cap. The DLL is always
+with /DFEAT_FRAME_CAP=1 into build/obj_frame_cap, and links to
+build/<name>_frame_cap.exe (map: build/<name>_exe_frame_cap.map)
+instead of overwriting the vanilla exe. The DLL is always
 built from the vanilla code, so it still matches the original.
 exe.feature_sources lists the sources only the exe with a feature
 builds, exe.feature_excludes the ones it leaves out instead: a module
@@ -449,9 +451,17 @@ def main():
         return build_watcom.main()
     os.chdir(ROOT)
     if sys.argv[1:] == ["exe"]:
+        global EXE, EXE_MAP
         feats = features()
         if feats:
             print("features:", ", ".join(feats))
+            # Keep a feature build from overwriting the vanilla exe, like
+            # build/obj_<features> keeps its objects apart.
+            suffix = "_".join(feats)
+            stem, ext = os.path.splitext(EXE)
+            EXE = f"{stem}_{suffix}{ext}"
+            mstem, mext = os.path.splitext(EXE_MAP)
+            EXE_MAP = f"{mstem}_{suffix}{mext}"
         if GL:
             # /GL objects hold no code to order them by: the plain ones do.
             link_exe(compile_all(EXE, feats=feats), compile_all(EXE, True, feats), feats)
