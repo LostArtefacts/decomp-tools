@@ -18,17 +18,26 @@ config/symbols.csv records for it:
    function is kept (/INCLUDE), referenced or not, and none is folded
    (/OPT:NOICF), so each keeps its slot.
 
-2. Data. bind_data() writes an object whose one .data section spans the
-   original's data section, with every symbols.csv global in it that the
-   game's objects use but neither they nor the libraries define. It is
-   linked first, so it starts the exe's .data after the runtime's
-   initializer tables, and the compiled objects' own data follows it.
-   With initial_data="original" the section holds the original's
-   initialized bytes, and every word there that is the address of a
-   recovered function becomes a relocation to it: a stand-in for the
-   initializers the sources do not recover yet.
+2. Runtime. With link(runtime=[...]), a first link shows which members
+   of the runtime libraries the game needs; they are then linked as
+   objects in the original's order (orig_runtime.py), and functions the
+   original's linker folded are folded again.
 
-3. Layout. The link is repeated, with filler after .text and .rdata and
+3. Data. bind_game_data() finds where the game objects' own data and
+   zero-initialized sections (strings, statics) were in the original,
+   from what matching code points at, symbols.csv or their contents, and
+   removes them. bind_data() then writes 000_data.obj: the original's
+   data section, with every symbols.csv global the objects need, those
+   sections' symbols, and every word that is a recovered function's
+   address as a relocation to it. With initial_data="original" it holds
+   the original's initialized bytes, a stand-in for initializers the
+   sources do not recover yet. With a runtime, the game's part of the
+   data section is split around the runtime's: 000_data.obj has the
+   initialized part as .data and the zero-initialized part as .bss, and
+   zzy_data_tail.obj, linked after the runtime, the tail (where the
+   original's linker put common symbols), with the runtime's commons.
+
+4. Layout. The link is repeated, with filler after .text and .rdata and
    room for the runtime's tables, until the bound globals sit at their
    original addresses.
 
@@ -42,6 +51,8 @@ import csv
 import dataclasses
 import json
 import os
+import re
+import shutil
 import struct
 
 import build
@@ -57,6 +68,7 @@ ALIGN_MASK = 0x00F00000
 ALIGN_1 = 0x00100000
 DATA_FLAGS = 0x40 | 0x40000000 | 0x80000000 | 0x00300000  # initialized, read, write, align 4
 CODE_FILL = 0x90
+BSS_FLAGS = 0x80 | 0x40000000 | 0x80000000 | 0x00300000  # uninitialized, read, write, align 4
 NOP_FLAGS = 0x00100A00  # an empty, removed .drectve-like section
 
 
@@ -69,6 +81,8 @@ def read_named_rows():
                 for r in csv.DictReader(f) if not r["symbol"].strip() and r["name"]]
 
 
+LAST_BOUND = {}  # name: address, of bind_data's last call
+PLACED_AT = {}  # (object, section): the address place_code gave a function
 EXTRA_ROWS = []  # (address, size, [symbols]) the project adds for the link only
 
 
@@ -204,6 +218,23 @@ class Rewriter:
         struct.pack_into("<IhHBB", self.symtab, (self.nsym - 1) * 18 + 8, value, section, 0x20,
                          coff.CLASS_EXTERNAL, 0)
 
+    def add_undefined(self, name):
+        """Appends an undefined external symbol; returns its index."""
+        self.add_symbol(name, 0, 0)
+        return self.nsym - 1
+
+    def retarget(self, old, new):
+        """Points every relocation to symbol `old` at symbol `new`."""
+        for number in range(1, self.nsec + 1):
+            records = self.section_relocs(number)
+            hit = False
+            for r in range(len(records) // 10):
+                if struct.unpack_from("<I", records, r * 10 + 4)[0] == old:
+                    struct.pack_into("<I", records, r * 10 + 4, new)
+                    hit = True
+            if hit:
+                self.relocs[number] = records
+
     def remove(self, obj, number, rename=None):
         """Empties section `number` and makes the symbols defined in it
         undefined externals, so another object's definitions serve them;
@@ -275,6 +306,7 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
     linker folded into one outside [code_start, code_end) with those bytes."""
     fold, adopt = fold or {}, adopt or {}
     folded = []
+    PLACED_AT.clear()
     symbols, primary = {}, {}
     for address, _, names in read_rows():
         for name in names:
@@ -361,6 +393,7 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
             end = start + size + (-(start + size) % 16)
         for piece in group:
             pads[piece.path, piece.section] = piece.data + bytes([CODE_FILL]) * (end - start - len(piece.data))
+            PLACED_AT[piece.path, piece.section] = start
             if piece.static:
                 renames[piece.path, piece.section] = piece.name
         order.append(group[0].name)
@@ -431,11 +464,20 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
     return [keep, *placed], folded
 
 
-def bind_data(objects, data_start, data_size, initial=None, code_range=None, skip=0):
+def bind_data(objects, data_start, data_size, initial=None, code_range=None, skip=0,
+              bindings=None, data_relocs=(), split=None):
     """Writes build/obj_placed/000_data.obj, the original's data section with
-    the globals the objects need from it; returns its path. The section
+    the globals the objects need from it; returns [its path]. The section
     leaves out the first `skip` bytes, which the linker gives to the
-    runtime's initializer tables (.CRT$X*): they sort before .data."""
+    runtime's initializer tables (.CRT$X*): they sort before .data.
+
+    bindings ({name: address}) and data_relocs ([(address, target, type,
+    addend)]) come from bind_game_data. With split ({"data_end": address,
+    "bss": (start, end), "tail": (start, end)}), the runtime's own data and
+    zero-initialized data sit between: 000_data.obj then has the
+    initialized game data up to data_end as .data and the bss range as
+    .bss, and a second object (returned second, to link after the
+    runtime) has the tail as .bss."""
     defined, needed, functions = set(), set(), {}
     for path in objects:
         obj = coff.Object(path)
@@ -454,18 +496,19 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
     needed -= defined
     needed -= libraries
     rows = read_rows()
-    bound = {}
+    bound = {}  # name: address
     for address, _, names in rows:
         if data_start <= address < data_start + data_size:
             for name in names:
                 if name in needed:
-                    if address < data_start + skip:
-                        raise ValueError(f"{name} at {address:#x} is under the runtime's tables")
-                    bound[name] = address - data_start - skip
-    contents = bytearray(data_size - skip)
-    relocs, undefined = [], set()
+                    bound[name] = address
+    bound.update(bindings or {})
+    for name, address in bound.items():
+        if address < data_start + skip:
+            raise ValueError(f"{name} at {address:#x} is under the runtime's tables")
+    contents = bytearray(data_size)
+    relocs = []
     if initial is not None:
-        initial = initial[skip:]
         contents[:len(initial)] = initial
         starts = {}
         for address, _, names in rows:
@@ -473,25 +516,241 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
                 name = next((n for n in names if n in functions), None)
                 if name:
                     starts.setdefault(address, name)
-        at = 0
+        covered = {a - data_start + i for a, _, _, _ in data_relocs for i in range(4)}
+        at = skip
         while at + 4 <= len(initial):
             value = struct.unpack_from("<I", contents, at)[0]
-            if value in starts:
-                struct.pack_into("<I", contents, at, 0)
-                relocs.append((at, starts[value], coff.DIR32))
-                undefined.add(starts[value])
+            if value in starts and at not in covered:
+                relocs.append((data_start + at, starts[value], coff.DIR32, 0))
                 at += 4
             else:
                 at += 1
-    defined_syms = {name: (1, offset) for name, offset in bound.items()}
-    defined_syms["_layout_data_start"] = (1, 0)
-    path = os.path.join(PLACED, "000_data.obj")
-    coff.write_object(path, [(".data", DATA_FLAGS, bytes(contents), relocs)],
-                      defined_syms, sorted(undefined - set(bound)), {})
+    relocs += list(data_relocs)
+    paths = []
+    if split is None:
+        paths.append(write_data(os.path.join(PLACED, "000_data.obj"), ".data", DATA_FLAGS,
+                                data_start + skip, data_start + data_size, data_start,
+                                contents[skip:], bound, relocs, "_layout_data_start"))
+    else:
+        data_end, (bss_start, bss_end), (tail_start, tail_end) = split["data_end"], split["bss"], split["tail"]
+        sections = [(".data", DATA_FLAGS, data_start + skip, data_end), (".bss", BSS_FLAGS, bss_start, bss_end)]
+        defined_syms, section_relocs, undefined = {"_layout_data_start": (1, 0), "_layout_bss_start": (2, 0)}, [], set()
+        bodies = []
+        for number, (name, flags, start, end) in enumerate(sections, 1):
+            body = bytearray(contents[start - data_start:end - data_start]) if flags == DATA_FLAGS else bytes(end - start)
+            here = []
+            for address, target, kind, addend in relocs:
+                if start <= address < end:
+                    if flags != DATA_FLAGS:
+                        raise ValueError(f"a pointer at {address:#x} is in zero-initialized data")
+                    struct.pack_into("<I", body, address - start, addend)
+                    here.append((address - start, target, kind))
+            bodies.append((name, flags, bytes(body), here))
+            for sym, address in bound.items():
+                if start <= address < end:
+                    defined_syms[sym] = (number, address - start)
+        placed_names = {n for n, a in bound.items() if any(s <= a < e for _, _, s, e in sections)
+                        or tail_start <= a < tail_end}
+        for _, _, _, here in bodies:
+            undefined |= {t for _, t, _ in here if t not in defined_syms}
+        stray = sorted(n for n in bound if n not in placed_names)
+        if stray:
+            print(f"warning: {len(stray)} globals are in the runtime's data: {', '.join(stray[:5])}")
+        path = os.path.join(PLACED, "000_data.obj")
+        coff.write_object(path, bodies, defined_syms, sorted(undefined), {})
+        paths.append(path)
+        if any(contents[tail_start - data_start:tail_end - data_start]):
+            raise ValueError("the tail of the original's data is not zero")
+        tail = {n: a for n, a in bound.items() if tail_start <= a < tail_end}
+        paths.append(write_data(os.path.join(PLACED, "zzy_data_tail.obj"), ".bss", BSS_FLAGS,
+                                tail_start, tail_end, data_start, bytes(tail_end - tail_start),
+                                tail, [], "_layout_tail_start"))
     missing = sorted(n for n in needed if n not in bound)
     with open(os.path.join(LAYOUT, "data.json"), "w") as f:
-        json.dump({"bound": len(bound), "function_pointers": len(relocs), "unbound": missing}, f, indent=1)
-    print(f"bound {len(bound)} globals, {len(relocs)} function pointers")
+        json.dump({"bound": len(bound), "pointers": len(relocs), "unbound": missing}, f, indent=1)
+    print(f"bound {len(bound)} globals, {len(relocs)} pointers")
+    LAST_BOUND.clear()
+    LAST_BOUND.update(bound)
+    return paths
+
+
+STATIC_SUFFIX = re.compile(r"\$S\d+$")
+DATA_SECTIONS = (".data", ".bss")
+
+
+def game_references(original):
+    """What the relocations of the functions place_code put at their
+    original addresses, and that match the original there, point at
+    (orig_runtime.references)."""
+    entries, objs = [], {}
+    for (path, number), address in PLACED_AT.items():
+        obj = objs.setdefault(path, coff.Object(path))
+        sec = obj.sections[number - 1]
+        data = orig_runtime.trimmed(sec)
+        if orig_runtime.masked_equal(data, mask_of(sec), original.read(address, len(data))):
+            entries.append((path, obj, number, address))
+    return orig_runtime.references(entries, original.read)
+
+
+def bind_game_data(placed, sources, original, refs, data_range):
+    """Removes the game objects' data sections (.data, .bss) whose original
+    address is known, so 000_data serves them there. An address comes from
+    what matching code points at (refs, from game_references), a
+    symbols.csv row for one of the section's symbols (a static by its name
+    without the compiler's $S suffix), or, for initialized data, the only
+    place the original has its contents. Zero-initialized statics the
+    original laid out in another order are bound one by one, when no
+    relocation needs their section's own symbol. Every copy of a COMDAT
+    goes where one copy does. Returns ({name: address}, [(address, target,
+    type, addend)] for the relocations of the removed initialized data)."""
+    bases, names, symbols = refs
+    rows = {}
+    for address, _, row_names in read_rows():
+        for name in row_names:
+            rows.setdefault(name, address)
+    va, _, raw, rawsize = original.sections[".data"]
+    image = original.data[raw:raw + rawsize]
+    unbound, plans, comdats, objs = [], {}, {}, {}
+    for path in placed:
+        source = sources.get(os.path.basename(path))
+        if source is None:
+            continue
+        obj = objs[path] = coff.Object(path)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        sec_refs = collections.Counter(i for sec in obj.sections for _, i, _ in sec.relocs)
+        plan = plans[path] = {}
+
+        def where(index, sym):
+            found = set()
+            if (source, index) in symbols:
+                found.add(symbols[source, index])
+            for name in (sym.name, STATIC_SUFFIX.sub("", sym.name)):
+                if name in names and sym.storage == coff.CLASS_EXTERNAL:
+                    found.add(names[name])
+                elif name in rows:
+                    found.add(rows[name])
+            return found
+
+        for number, sec in enumerate(obj.sections, 1):
+            if sec.name not in DATA_SECTIONS or sec.flags & coff.CODE or not len(sec.data):
+                continue
+            own = section_symbol(obj, number)
+            members = [(i, y) for i, y in enumerate(obj.symbols) if y and y.section == number and i != own]
+            found = set()
+            if (source, number) in bases:
+                found.add(bases[source, number])
+            each = {}
+            for index, sym in members:
+                at = where(index, sym)
+                each[index] = at
+                found |= {a - sym.value for a in at}
+            initialized = not sec.flags & 0x80
+            if not found and initialized and any(sec.data):
+                hits = orig_runtime.find_masked(sec.data, mask_of(sec), image, 0, len(image))
+                placed_bases = [b for b in plan.values() if isinstance(b, int)]
+                if len(hits) > 1 and placed_bases:
+                    near = sorted(placed_bases)[len(placed_bases) // 2]
+                    hits = [min(hits, key=lambda h: abs(va + h - near))]
+                if len(hits) == 1:
+                    found.add(va + hits[0])
+            label = f"{stem}:{number}:{sec.name}:{len(sec.data)}"
+            if len(found) == 1:
+                base = found.pop()
+                if not data_range[0] <= base <= data_range[1] - len(sec.data):
+                    unbound.append(f"{label} at {base:#x}")
+                    continue
+                here = original.read(base, len(sec.data)) if base < va + rawsize else b""
+                here = here.ljust(len(sec.data), b"\0")
+                if initialized and not orig_runtime.masked_equal(sec.data, mask_of(sec), here):
+                    unbound.append(f"{label} differs at {base:#x}")
+                    continue
+                if not initialized and any(here):
+                    unbound.append(f"{label} over data at {base:#x}")
+                    continue
+                plan[number] = base
+                if obj.sections[number - 1].flags & COMDAT:
+                    for _, sym in members:
+                        if sym.storage == coff.CLASS_EXTERNAL and sym.value == 0:
+                            comdats[sym.name] = base
+            elif (not initialized and not sec_refs[own]
+                  and all(len(at) == 1 for at in each.values()) and each):
+                plan[number] = {i: next(iter(at)) for i, at in each.items()}
+            else:
+                unbound.append(label + (" (conflict)" if found else ""))
+    for path, plan in plans.items():
+        obj = objs[path]
+        for number, sec in enumerate(obj.sections, 1):
+            if number in plan or sec.name not in DATA_SECTIONS or not sec.flags & COMDAT:
+                continue
+            for sym in obj.symbols:
+                if sym and sym.section == number and sym.name in comdats:
+                    plan[number] = comdats[sym.name]
+                    stem = os.path.splitext(os.path.basename(path))[0]
+                    label = f"{stem}:{number}:{sec.name}:{len(sec.data)}"
+                    if label in unbound:
+                        unbound.remove(label)
+    bindings, relocs, bound = {}, [], 0
+    for path, plan in plans.items():
+        if not plan:
+            continue
+        obj = objs[path]
+        stem = os.path.splitext(os.path.basename(path))[0]
+        rewriter = Rewriter(path)
+        new_names = {}
+        for number, base in plan.items():
+            own = section_symbol(obj, number)
+            if own is not None and isinstance(base, int):
+                name = f"_layout_{stem}_s{number}"
+                rewriter.retarget(own, rewriter.add_undefined(name))
+                bindings[name] = base
+            rename = {}
+            for index, sym in enumerate(obj.symbols):
+                if not sym or sym.section != number or index == own:
+                    continue
+                name = sym.name
+                if sym.storage != coff.CLASS_EXTERNAL:
+                    name = rename[index] = f"_layout_{stem}_{index}"
+                new_names[index] = name
+                address = base + sym.value if isinstance(base, int) else base[index]
+                if bindings.setdefault(name, address) != address:
+                    raise ValueError(f"{name} is bound at {bindings[name]:#x} and {address:#x}")
+            rewriter.remove(obj, number, rename)
+        for number, base in plan.items():
+            if not isinstance(base, int):
+                continue
+            for off, index, kind in obj.sections[number - 1].relocs:
+                sym = obj.symbols[index]
+                if sym.section > 0 and sym.section in plan and index == section_symbol(obj, sym.section):
+                    target, addend = f"_layout_{stem}_s{sym.section}", 0
+                elif index in new_names or sym.storage == coff.CLASS_EXTERNAL:
+                    target, addend = new_names.get(index, sym.name), 0
+                else:
+                    raise ValueError(f"{path}: data at {base + off:#x} points at a static {sym.name}")
+                addend += struct.unpack_from("<I", obj.sections[number - 1].data, off)[0]
+                relocs.append((base + off, target, kind, addend))
+        rewriter.write(path)
+        bound += len(plan)
+    with open(os.path.join(LAYOUT, "game-data.json"), "w") as f:
+        json.dump({"bound": bound, "unbound": unbound}, f, indent=1)
+    print(f"bound {bound} of the game's data sections, {len(unbound)} not")
+    return bindings, relocs
+
+
+def write_data(path, name, flags, start, end, data_start, contents, symbols, relocs, marker):
+    """Writes an object with one section covering [start, end) of the
+    original's data section; symbols and relocs are by address."""
+    defined = {n: (1, a - start) for n, a in symbols.items() if start <= a < end}
+    defined[marker] = (1, 0)
+    section_relocs, undefined = [], set()
+    contents = bytearray(contents)
+    for address, target, kind, addend in relocs:
+        if start <= address < end:
+            struct.pack_into("<I", contents, address - start, addend)
+            section_relocs.append((address - start, target, kind))
+            if target not in defined:
+                undefined.add(target)
+    coff.write_object(path, [(name, flags, bytes(contents), section_relocs)], defined,
+                      sorted(undefined), {})
     return path
 
 
@@ -538,7 +797,7 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
     with exe_options(link_order="source", ldflags=flags, exe=preliminary,
                      exe_map=os.path.join(LAYOUT, "preliminary.map")):
         data = bind_data(placed, data_va, data_size)
-        build.link_exe([data, *placed], customize=False)
+        build.link_exe([*data, *placed], customize=False)
         map_path = build.EXE_MAP
     paths = []
     for name in runtime:
@@ -559,7 +818,7 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
     entries = [(p, objs[p], n, a) for (p, n), a in code_at.items()]
     # Where the members' data sits: from what the matching code points at,
     # then from data contents, then from what that data points at.
-    bases, names = orig_runtime.references(entries, original.read)
+    bases, names, _ = orig_runtime.references(entries, original.read)
     data_lo, data_hi = original.sections[".rdata"][0], data_va + data_size
     for path, obj in objs.items():
         for number, sec in enumerate(obj.sections, 1):
@@ -576,16 +835,22 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
     data_entries = [(p, objs[p], n, a) for (p, n), a in bases.items()
                     if data_lo <= a < data_hi and objs[p].sections[n - 1].data
                     and not objs[p].sections[n - 1].flags & 0x80]
-    more_bases, more_names = orig_runtime.references(data_entries, original.read)
+    more_bases, more_names, _ = orig_runtime.references(data_entries, original.read)
     for key, value in more_bases.items():
         bases.setdefault(key, value)
     for key, value in more_names.items():
         names.setdefault(key, value)
-    data_at = {}
+    for path, obj in objs.items():
+        for sym in obj.externals():
+            if sym.section > 0 and (path, sym.section) not in bases and sym.name in names:
+                bases[path, sym.section] = names[sym.name] - sym.value
+    data_at, bss_at = {}, {}
     for (path, number), address in bases.items():
-        if objs[path].sections[number - 1].name == ".data":
-            data_at[path] = min(data_at.get(path, address), address)
-    members = orig_runtime.order(paths, code_at, data_at)
+        name = objs[path].sections[number - 1].name
+        table = data_at if name == ".data" else bss_at if name == ".bss" else None
+        if table is not None:
+            table[path] = min(table.get(path, address), address)
+    members = orig_runtime.order(paths, code_at, data_at, bss_at)
     # A game function the original's linker folded into a runtime function,
     # and a runtime function it folded into a game function.
     starts = {}
@@ -650,11 +915,83 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
                    "folded": folded, "folded_into_game": {a: n for a, n in adopt.items()},
                    "folded_runtime": {f"{p}:{n}": f"{o[0]}:{o[1]}" for (p, n), o in folds.items()}},
                   f, indent=1)
+    commons = set()
+    for obj in objs.values():
+        for sym in obj.externals():
+            if sym.section == 0 and sym.value:
+                commons.add(sym.name)
+    for obj in objs.values():
+        commons -= {sym.name for sym in obj.externals() if sym.section > 0}
+    info = {"bases": bases, "objs": objs,
+            "commons": {n: a for n, a in names.items() if n in commons and data_va <= a < data_hi}}
     print(f"runtime: {len(members)} members, {len(code_at)} code sections matched, "
           f"{len(bases)} data sections found, {len(folded)} game functions folded into it, "
           f"{sum(map(len, adopt.values()))} of its functions folded into the game's, "
           f"{len(folds)} into its own")
-    return placed, members, libs
+    return placed, members, libs, info
+
+
+def alignment(flags):
+    shift = (flags & ALIGN_MASK) >> 20
+    return 1 << (shift - 1) if shift else 16
+
+
+def runtime_gaps(members, info, split):
+    """Inserts filler objects between runtime members where the original
+    leaves more room between their data (or zero-initialized data) than
+    alignment explains: there the original has something the link does not."""
+    cursors = {".data": split["data_end"], ".bss": split["bss"][1]}
+    out, count = [], 0
+    for path in members:
+        obj = info["objs"][path]
+        for number, sec in enumerate(obj.sections, 1):
+            if sec.name not in cursors or not len(sec.data):
+                continue
+            align = alignment(sec.flags)
+            cursor = cursors[sec.name]
+            at = cursor + (-cursor % align)
+            base = info["bases"].get((path, number))
+            # The linker can align a section further than its flags ask
+            # (to 16): only a larger gap is something else.
+            if base is not None and base > cursor + (-cursor % 16):
+                flags = (DATA_FLAGS if sec.name == ".data" else BSS_FLAGS) & ~ALIGN_MASK | ALIGN_1
+                filler_path = os.path.join(PLACED, f"zzx_gap{count}.obj")
+                coff.write_object(filler_path, [(sec.name, flags, bytes(base - cursor), [])], {}, [], {})
+                out.append(filler_path)
+                print(f"gap of {base - cursor:#x} before {path} section {number} at {base:#x}")
+                count += 1
+                at = base
+            elif base is not None and base < at:
+                print(f"warning: {path} section {number} overlaps the runtime's data before it")
+            elif base is not None:
+                at = base
+            cursors[sec.name] = at + len(sec.data)
+        out.append(path)
+    if count:
+        print(f"{count} gaps in the runtime's data filled")
+    return out
+
+
+def runtime_split(info, data_va, data_size):
+    """Where the runtime's data and zero-initialized data start and end in
+    the original's data section (bind_data's split), from the addresses
+    link_runtime found for its sections. The starts of the game's
+    zero-initialized part and of the tail are guesses the link corrects."""
+    data, bss = [], []
+    for (path, number), address in info["bases"].items():
+        sec = info["objs"][path].sections[number - 1]
+        if not data_va <= address < data_va + data_size or sec.flags & coff.CODE:
+            continue
+        if sec.name == ".data":
+            data.append((address, address + len(sec.data)))
+        elif sec.name == ".bss":
+            bss.append((address, address + len(sec.data)))
+    if not data or not bss:
+        raise ValueError("the runtime's data was not found in the original")
+    data_end = max(e for _, e in data)
+    return {"data_end": min(s for s, _ in data),
+            "bss": (data_end + (-data_end % 4), min(s for s, _ in bss)),
+            "tail": (max(e for _, e in bss), data_va + data_size)}
 
 
 def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=()):
@@ -676,21 +1013,33 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
     flags = [f for f in build.EXE_CONFIG["ldflags"]]
     # Identical functions keep their own slots.
     flags += ["/ORDER:@" + build.win(os.path.join(LAYOUT, "order.txt")), "/OPT:NOICF", *ldflags]
-    members, libs = [], list(build.EXE_CONFIG["libs"])
+    members, libs, info = [], list(build.EXE_CONFIG["libs"]), None
     if runtime:
-        placed, members, libs = link_runtime(placed, objects, original, (text_va, game_end + 1),
-                                             runtime, flags)
+        placed, members, libs, info = link_runtime(placed, objects, original, (text_va, game_end + 1),
+                                                   runtime, flags)
+    bindings, data_relocs, split = {}, [], None
+    if info is not None:
+        sources = {os.path.basename(p): p for p in objects}
+        bindings, data_relocs = bind_game_data(placed, sources, original, game_references(original),
+                                               (data_va, data_va + data_size))
+        for name, address in info["commons"].items():
+            bindings.setdefault(name, address)
+        split = runtime_split(info, data_va, data_size)
+        members = runtime_gaps(members, info, split)
     fills, skip = {}, 0
-    for attempt in range(4):
-        data = bind_data(placed, data_va, data_size, initial, (text_va, game_end + 1), skip)
+    for attempt in range(6):
+        data = bind_data(placed, data_va, data_size, initial, (text_va, game_end + 1), skip,
+                         bindings, data_relocs, split)
         extra = [filler(name, flags_, size)[0] for name, (flags_, size) in fills.items()]
         with exe_options(link_order="source", ldflags=flags, libs=libs):
-            build.link_exe([data, *placed, *members, *extra], customize=False)
+            build.link_exe([data[0], *placed, *members, *data[1:], *extra], customize=False)
         ours = sections(build.EXE)
+        exe_map = compare_exe.read_map(build.EXE_MAP)
+        shutil.copy(build.EXE_MAP, os.path.join(LAYOUT, f"attempt{attempt}.map"))
         changed = False
         for name, flags_ in ((".text", coff.TEXT), (".rdata", coff.RDATA)):
-            names = list(original.sections)
-            following = names[names.index(name) + 1]
+            names_ = list(original.sections)
+            following = names_[names_.index(name) + 1]
             if name not in ours or following not in ours:
                 continue
             gap = original.sections[following][0] - ours[following][0]
@@ -700,11 +1049,25 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
                 changed = True
                 print(f"padding {name} by {gap:#x}")
                 break
-        start = compare_exe.read_map(build.EXE_MAP).get("_layout_data_start", (None,))[0]
+        start = exe_map.get("_layout_data_start", (None,))[0]
         if not changed and start is not None and ours[".data"][0] == data_va and start != data_va + skip:
             skip = start - data_va
             changed = True
             print(f"leaving {skip:#x} bytes to the runtime's tables")
+        if not changed and split is not None:
+            bindings_all = LAST_BOUND
+            for marker, key in (("_layout_bss_start", "bss"), ("_layout_tail_start", "tail")):
+                at = exe_map.get(marker, (None,))[0]
+                if at is None or at == split[key][0]:
+                    continue
+                lost = sorted(n for n, a in bindings_all.items() if split[key][0] <= a < at)
+                if lost:
+                    print(f"warning: the {key} part starts at {at:#x}, not {split[key][0]:#x}, "
+                          f"past {', '.join(lost[:4])}")
+                    continue
+                print(f"moving the {key} part from {split[key][0]:#x} to {at:#x}")
+                split[key] = (at, split[key][1])
+                changed = True
         if not changed:
             break
     report(ours, original, data_va + skip)

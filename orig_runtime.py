@@ -154,9 +154,10 @@ def references(entries, read):
     """What the relocations of sections at known original addresses point
     at in the original: entries are (path, obj, section, address), `read`
     reads the original. Returns {(path, section): base} for the sections
-    their symbols are defined in and {name: address} for externals.
-    Conflicting answers are dropped."""
-    bases, names, bad = {}, {}, set()
+    their symbols are defined in, {name: address} for externals and
+    {(path, symbol index): address} for defined symbols. Conflicting
+    answers are dropped."""
+    bases, names, symbols, bad = {}, {}, {}, set()
 
     def note(table, key, value):
         if key in table and table[key] != value:
@@ -180,12 +181,14 @@ def references(entries, read):
             sym = obj.symbols[index]
             if sym.section > 0:
                 note(bases, (path, sym.section), (target - sym.value) & 0xFFFFFFFF)
-            elif sym.section == 0 and sym.storage == coff.CLASS_EXTERNAL and not sym.value:
+                note(symbols, (path, index), target)
+            elif sym.section == 0 and sym.storage == coff.CLASS_EXTERNAL:
                 note(names, sym.name, target)
     for key in bad:
         bases.pop(key, None)
         names.pop(key, None)
-    return bases, names
+        symbols.pop(key, None)
+    return bases, names, symbols
 
 
 def targets(obj, number):
@@ -278,18 +281,22 @@ def match_code(paths, text, text_va, lo, hi, known=None, live=None):
     return chosen, folds
 
 
-def order(paths, code_at, data_at):
+def order(paths, code_at, data_at, bss_at=None):
     """The members in the original's order: by their code's address, with
-    the data-only ones before the first member whose data follows theirs."""
+    each data-only member before the first member whose initialized (or
+    else zero-initialized) data follows its own."""
+    bss_at = bss_at or {}
     code = {p: min(a for (q, _), a in code_at.items() if q == p)
             for p in paths if any(q == p for q, _ in code_at)}
     ordered = sorted(code, key=code.get)
     rest = [p for p in paths if p not in code]
-    for path in sorted(rest, key=lambda p: data_at.get(p, 1 << 40)):
-        at = data_at.get(path)
+    for path in sorted(rest, key=lambda p: (data_at.get(p, 1 << 40), bss_at.get(p, 1 << 40))):
         index = len(ordered)
-        if at is not None:
-            index = next((i for i, q in enumerate(ordered) if data_at.get(q, -1) > at), len(ordered))
+        for table in (data_at, bss_at):
+            at = table.get(path)
+            if at is not None:
+                index = next((i for i, q in enumerate(ordered) if table.get(q, -1) > at), len(ordered))
+                break
         ordered.insert(index, path)
     return ordered
 
