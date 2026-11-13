@@ -45,7 +45,7 @@ doesn't count.
 pre-commit leaves the newly matching functions in the git directory for
 commit-msg, which runs after it. `git commit --no-verify` skips both.
 """
-import csv, os, re, subprocess, sys, tempfile
+import csv, io, os, re, subprocess, sys, tempfile
 
 import project
 
@@ -68,12 +68,16 @@ def rows():
 
 
 def allow_diff_at_head():
-    """hooks.allow_diff in HEAD's project.toml."""
+    """The addresses of hooks.allow_diff in HEAD's project.toml, by
+    HEAD's symbols.csv, so that renaming a listed function keeps it
+    listed."""
     import tomllib
     shown = git("show", "HEAD:project.toml", check=False)
-    if shown.returncode:
+    symbols = git("show", "HEAD:config/symbols.csv", check=False)
+    if shown.returncode or symbols.returncode:
         return set()
-    return set(tomllib.loads(shown.stdout).get("hooks", {}).get("allow_diff", []))
+    listed = set(tomllib.loads(shown.stdout).get("hooks", {}).get("allow_diff", []))
+    return {int(r["address"], 16) for r in csv.DictReader(io.StringIO(symbols.stdout)) if r["name"] in listed}
 
 
 def matched_at_head():
@@ -165,8 +169,8 @@ def pre_commit():
         if before is not None:
             by_address = {a: n for a, n in names.values()}
             new = sorted(a for a in matched - before if by_address[a] not in allowed)
-            new += sorted({a for a, n in names.values()
-                           if n in listed - allow_diff_at_head() and a not in before})
+            old = allow_diff_at_head() | before
+            new += sorted({a for a, n in names.values() if n in listed and a not in old})
             with open(path, "w") as f:
                 for address in new:
                     f.write(f"{address:#x} {by_address[address]}\n")
