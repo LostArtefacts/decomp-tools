@@ -291,6 +291,8 @@ CRT = ("libc:", "libcmt:", "msvcrt:")
 
 
 def region_of(obj):
+    if "~" in obj:  # a library member orig_layout links as an object
+        obj = obj.replace("~", ":", 1)
     if obj.startswith(CRT):
         return "CRT"
     if ":" in obj:

@@ -47,6 +47,7 @@ import struct
 import build
 import coff
 import compare_exe
+import orig_runtime
 import project
 
 LAYOUT = "build/layout"
@@ -59,11 +60,24 @@ CODE_FILL = 0x90
 NOP_FLAGS = 0x00100A00  # an empty, removed .drectve-like section
 
 
-def read_rows():
-    """[(address, size, [symbols])] from config/symbols.csv."""
+def read_named_rows():
+    """[(address, size, [names])] for the symbols.csv rows whose symbol
+    column is empty (runtime functions the game does not define), with the
+    name column as written and with a leading underscore."""
     with open(os.path.join(project.ROOT, "config/symbols.csv")) as f:
-        return [(int(r["address"], 16), int(r["size"] or 0), r["symbol"].split())
+        return [(int(r["address"], 16), int(r["size"] or 0), [r["name"], "_" + r["name"]])
+                for r in csv.DictReader(f) if not r["symbol"].strip() and r["name"]]
+
+
+EXTRA_ROWS = []  # (address, size, [symbols]) the project adds for the link only
+
+
+def read_rows():
+    """[(address, size, [symbols])] from config/symbols.csv, with EXTRA_ROWS."""
+    with open(os.path.join(project.ROOT, "config/symbols.csv")) as f:
+        rows = [(int(r["address"], 16), int(r["size"] or 0), r["symbol"].split())
                 for r in csv.DictReader(f)]
+    return sorted(rows + [(a, s, list(n)) for a, s, n in EXTRA_ROWS], key=lambda r: r[0])
 
 
 def lib_path(name):
@@ -93,6 +107,11 @@ def archive_symbols(path):
     count = struct.unpack_from(">I", body, 0)[0]
     names = body[4 + 4 * count:].split(b"\0")[:count]
     return {n.decode("latin-1") for n in names}
+
+
+def mask_of(sec):
+    """The offsets a section's relocations cover."""
+    return {off + i for off, _, _ in sec.relocs for i in range(4)}
 
 
 def section_symbol(obj, number):
@@ -185,6 +204,25 @@ class Rewriter:
         struct.pack_into("<IhHBB", self.symtab, (self.nsym - 1) * 18 + 8, value, section, 0x20,
                          coff.CLASS_EXTERNAL, 0)
 
+    def remove(self, obj, number, rename=None):
+        """Empties section `number` and makes the symbols defined in it
+        undefined externals, so another object's definitions serve them;
+        rename gives some of them ({index: name}) new names."""
+        index = section_symbol(obj, number)
+        self.data[number] = b""
+        self.relocs[number] = bytearray()
+        self.set_name(number, ".drectve")
+        self.set_flags(number, NOP_FLAGS)
+        for i, sym in enumerate(obj.symbols):
+            if sym and sym.section == number and i != index:
+                struct.pack_into("<IhH", self.symtab, i * 18 + 8, 0, 0, 0x20)
+                self.symtab[i * 18 + 16] = coff.CLASS_EXTERNAL
+                if rename and i in rename:
+                    self.rename_symbol(i, rename[i])
+        if index is not None and self.symtab[index * 18 + 17]:
+            self.set_aux_length(index, 0)
+            struct.pack_into("<H", self.symtab, (index + 1) * 18 + 4, 0)
+
     def swap_symbols(self, a, b):
         """Swaps two plain symbol records, and every relocation to them."""
         sa, sb = self.symtab[a * 18:a * 18 + 18], self.symtab[b * 18:b * 18 + 18]
@@ -230,9 +268,13 @@ def source_paths():
             for src, obj in build.sources(build.EXE)}
 
 
-def place_code(objects, code_start, code_end):
+def place_code(objects, code_start, code_end, fold=None, adopt=None):
     """Rewrites the objects into build/obj_placed with their functions padded
-    to their original addresses; returns the new paths and the /ORDER names."""
+    to their original addresses; returns the new paths and the names of the
+    functions removed by `fold`, {name: bytes}: functions the original's
+    linker folded into one outside [code_start, code_end) with those bytes."""
+    fold, adopt = fold or {}, adopt or {}
+    folded = []
     symbols, primary = {}, {}
     for address, _, names in read_rows():
         for name in names:
@@ -240,6 +282,7 @@ def place_code(objects, code_start, code_end):
         primary.setdefault(address, names)
     stems = source_paths()
     pieces = collections.defaultdict(list)  # address: [Piece]
+    removed = set()
     asm = collections.defaultdict(set)  # path: promoted section numbers
     unknown = []
     for path in objects:
@@ -256,6 +299,13 @@ def place_code(objects, code_start, code_end):
             key = sym.name if sym.name in symbols else f"{rel}:{sym.name}"
             address = symbols.get(key)
             if address is None or not code_start <= address < code_end:
+                expected = fold.get(key)
+                if (expected is not None and sym.storage == 2 and len(sec.data) >= len(expected)
+                        and all(a == b or i in mask_of(sec) for i, (a, b) in enumerate(zip(sec.data, expected)))
+                        and not any(sec.data[len(expected):].strip(bytes([CODE_FILL])))):
+                    removed.add((path, number))
+                    folded.append(sym.name)
+                    continue
                 unknown.append((path, number, sym.name))
                 continue
             if not sec.flags & COMDAT:
@@ -282,12 +332,13 @@ def place_code(objects, code_start, code_end):
     # define (with every copy of it: an inline function each object emits).
     # A folded function identical to it becomes an alias of its symbol.
     addresses = sorted(pieces)
-    chosen, aliases, removed = {}, collections.defaultdict(list), set()
+    chosen, aliases = {}, collections.defaultdict(list)
     for address in addresses:
         group = pieces[address]
         rank = {n: i for i, n in enumerate(primary.get(address, []))}
         best = min(group, key=lambda p: (rank.get(p.key, len(rank)), -len(p.data)))
         chosen[address] = [p for p in group if p.key == best.key]
+        aliases[best.path, best.section] += adopt.get(address, [])
         for piece in group:
             if piece.key == best.key or (piece.path, piece.section) in removed:
                 continue
@@ -344,17 +395,7 @@ def place_code(objects, code_start, code_end):
         for number in range(1, len(obj.sections) + 1):
             index = section_symbol(obj, number)
             if (path, number) in removed:
-                rewriter.data[number] = b""
-                rewriter.relocs[number] = bytearray()
-                rewriter.set_name(number, ".drectve")
-                rewriter.set_flags(number, NOP_FLAGS)
-                for i, sym in enumerate(obj.symbols):
-                    if sym and sym.section == number and i != index:
-                        struct.pack_into("<IhH", rewriter.symtab, i * 18 + 8, 0, 0, 0x20)
-                        rewriter.symtab[i * 18 + 16] = coff.CLASS_EXTERNAL
-                if index is not None and rewriter.symtab[index * 18 + 17]:
-                    rewriter.set_aux_length(index, 0)
-                    struct.pack_into("<H", rewriter.symtab, (index + 1) * 18 + 4, 0)
+                rewriter.remove(obj, number)
                 continue
             if (path, number) not in pads:
                 continue
@@ -387,7 +428,7 @@ def place_code(objects, code_start, code_end):
         json.dump(report, f, indent=1)
     print(f"placed {len(order)} functions up to {cursor:#x}, {len(moved)} moved, "
           f"{sum(map(len, aliases.values()))} aliases, {len(unknown)} code sections unplaced")
-    return [keep, *placed]
+    return [keep, *placed], folded
 
 
 def bind_data(objects, data_start, data_size, initial=None, code_range=None, skip=0):
@@ -456,6 +497,8 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
 
 def filler(name, flags, size):
     path = os.path.join(PLACED, f"zzz_{name.strip('.')}_fill.obj")
+    if flags & coff.CODE:
+        name += "$z"  # after the runtime's code groups
     fill = bytes([CODE_FILL]) * size if flags & coff.CODE else bytes(size)
     symbol = f"_layout_{name.strip('.')}_fill"
     coff.write_object(path, [(name, flags, fill, [])], {symbol: (1, 0)}, [], {})
@@ -484,26 +527,165 @@ def sections(path):
     return {name: (va, vsize) for name, (va, vsize, _, _) in pe.sections.items()}
 
 
-def link(objects, *, initial_data="original", ldflags=()):
-    """Links build/<name>.exe from the exe's objects in the original's layout."""
+def link_runtime(placed, objects, original, code_range, runtime, flags):
+    """Links once to see which runtime members the game needs, then lays
+    them out as the original's (orig_runtime). Returns the placed objects
+    (again, without the functions folded into the runtime), the members
+    and the libraries for the final link."""
+    text_va, text_size = original.sections[".text"][:2]
+    data_va, data_size = original.sections[".data"][:2]
+    preliminary = os.path.join(LAYOUT, "preliminary.exe")
+    with exe_options(link_order="source", ldflags=flags, exe=preliminary,
+                     exe_map=os.path.join(LAYOUT, "preliminary.map")):
+        data = bind_data(placed, data_va, data_size)
+        build.link_exe([data, *placed], customize=False)
+        map_path = build.EXE_MAP
+    paths = []
+    for name in runtime:
+        path = lib_path(name)
+        if path is None:
+            raise ValueError(f"the runtime library {name} is not on the library path")
+        paths += orig_runtime.extract(map_path, name, path)
+    text = original.read(text_va, text_size)
+    runtime_range = (code_range[1], text_va + text_size)
+    known = {}
+    for address, _, names in read_rows() + read_named_rows():
+        if runtime_range[0] <= address < runtime_range[1]:
+            for name in names:
+                known.setdefault(name, address)
+    live = compare_exe.read_map(map_path)
+    code_at, folds = orig_runtime.match_code(paths, text, text_va, *runtime_range, known, live)
+    objs = {path: coff.Object(path) for path in paths}
+    entries = [(p, objs[p], n, a) for (p, n), a in code_at.items()]
+    # Where the members' data sits: from what the matching code points at,
+    # then from data contents, then from what that data points at.
+    bases, names = orig_runtime.references(entries, original.read)
+    data_lo, data_hi = original.sections[".rdata"][0], data_va + data_size
+    for path, obj in objs.items():
+        for number, sec in enumerate(obj.sections, 1):
+            if (path, number) in bases or sec.flags & (coff.CODE | 0x80) or not sec.data:
+                continue
+            if sec.name.split("$")[0] not in (".data", ".rdata"):
+                continue
+            name = original.section_of(data_lo) if sec.name.startswith(".rdata") else ".data"
+            va, _, raw, rawsize = original.sections[name]
+            image = original.data[raw:raw + rawsize]
+            hits = orig_runtime.find_masked(sec.data, mask_of(sec), image, 0, len(image))
+            if len(hits) == 1:
+                bases[path, number] = va + hits[0]
+    data_entries = [(p, objs[p], n, a) for (p, n), a in bases.items()
+                    if data_lo <= a < data_hi and objs[p].sections[n - 1].data
+                    and not objs[p].sections[n - 1].flags & 0x80]
+    more_bases, more_names = orig_runtime.references(data_entries, original.read)
+    for key, value in more_bases.items():
+        bases.setdefault(key, value)
+    for key, value in more_names.items():
+        names.setdefault(key, value)
+    data_at = {}
+    for (path, number), address in bases.items():
+        if objs[path].sections[number - 1].name == ".data":
+            data_at[path] = min(data_at.get(path, address), address)
+    members = orig_runtime.order(paths, code_at, data_at)
+    # A game function the original's linker folded into a runtime function,
+    # and a runtime function it folded into a game function.
+    starts = {}
+    for (path, number), address in code_at.items():
+        starts[path, number] = (address, len(orig_runtime.trimmed(objs[path].sections[number - 1])))
+    fold, inside = {}, {}
+    for address, size, row_names in read_rows():
+        if not runtime_range[0] <= address < runtime_range[1] or not size:
+            continue
+        for key, (start, length) in starts.items():
+            if start <= address < start + length:
+                for name in row_names:
+                    fold[name] = original.read(address, size)
+                    inside[name] = (key, address - start)
+    adopt, dropped = collections.defaultdict(list), {}
+    for path, obj in objs.items():
+        for number in orig_runtime.code_sections(obj):
+            if (path, number) in code_at:
+                continue
+            _, sym = key_symbol(obj, number)
+            if sym is None or sym.storage != coff.CLASS_EXTERNAL:
+                continue
+            address = names.get(sym.name, bases.get((path, number)))
+            if address is None or not code_range[0] <= address < code_range[1]:
+                continue
+            data = orig_runtime.trimmed(obj.sections[number - 1])
+            if orig_runtime.masked_equal(data, mask_of(obj.sections[number - 1]),
+                                         original.read(address, len(data))):
+                adopt[address].append(sym.name)
+                dropped[path, number] = {}
+    placed, folded = place_code(objects, code_range[0], code_range[1], fold, adopt)
+    aliases = collections.defaultdict(list)
+    for name in folded:
+        key, offset = inside[name]
+        aliases[key].append((name, offset))
+    # Runtime functions folded into identical runtime functions.
+    for (path, number), owner in folds.items():
+        obj = objs[path]
+        stem = os.path.splitext(os.path.basename(path))[0].replace("~", "_")
+        rename = {}
+        for index, sym in enumerate(obj.symbols):
+            if not sym or sym.section != number or index == section_symbol(obj, number):
+                continue
+            name = sym.name
+            if sym.storage != coff.CLASS_EXTERNAL:
+                name = rename[index] = f"_layout_{stem}_{index}_{sym.name.lstrip('_')}"
+            aliases[owner].append((name, sym.value))
+        dropped[path, number] = rename
+    orig_runtime.write(members, Rewriter, aliases, dropped)
+    libs = list(build.EXE_CONFIG["libs"])
+    last = max(i for i, n in enumerate(libs) if n.lower() in {r.lower() for r in runtime})
+    for i in range(last + 1, len(libs)):
+        path = lib_path(libs[i])
+        if path:
+            out = os.path.join(orig_runtime.RUNTIME, "tail", os.path.basename(path))
+            libs[i] = build.win(orig_runtime.tail_library(path, out))
+    with open(os.path.join(LAYOUT, "runtime.json"), "w") as f:
+        json.dump({"members": members,
+                   "code": {f"{p}:{n}": hex(a) for (p, n), a in sorted(code_at.items(), key=lambda kv: kv[1])},
+                   "unmatched": sorted(p for p in paths if not any(q == p for q, _ in code_at)),
+                   "data": {f"{p}:{n}": hex(a) for (p, n), a in sorted(bases.items(), key=lambda kv: kv[1])},
+                   "folded": folded, "folded_into_game": {a: n for a, n in adopt.items()},
+                   "folded_runtime": {f"{p}:{n}": f"{o[0]}:{o[1]}" for (p, n), o in folds.items()}},
+                  f, indent=1)
+    print(f"runtime: {len(members)} members, {len(code_at)} code sections matched, "
+          f"{len(bases)} data sections found, {len(folded)} game functions folded into it, "
+          f"{sum(map(len, adopt.values()))} of its functions folded into the game's, "
+          f"{len(folds)} into its own")
+    return placed, members, libs
+
+
+def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=()):
+    """Links build/<name>.exe from the exe's objects in the original's layout.
+    extra_rows are (address, size, [symbols]) rows for functions symbols.csv
+    does not list, such as a source file's static initializers. runtime
+    names the libraries (like libc.lib) whose members are linked in the
+    original's order (orig_runtime)."""
+    EXTRA_ROWS[:] = extra_rows
     os.makedirs(LAYOUT, exist_ok=True)
     original = compare_exe.PE(project.ORIGINAL)
     text_va, text_size = original.sections[".text"][:2]
     data_va, data_size, data_raw, data_rawsize = original.sections[".data"]
     game_end = project.config["game"].get("game_end") or text_va + text_size
-    placed = place_code(objects, text_va, game_end + 1)
+    placed, _ = place_code(objects, text_va, game_end + 1)
     initial = None
     if initial_data == "original":
         initial = original.data[data_raw:data_raw + min(data_rawsize, data_size)]
     flags = [f for f in build.EXE_CONFIG["ldflags"]]
     # Identical functions keep their own slots.
     flags += ["/ORDER:@" + build.win(os.path.join(LAYOUT, "order.txt")), "/OPT:NOICF", *ldflags]
+    members, libs = [], list(build.EXE_CONFIG["libs"])
+    if runtime:
+        placed, members, libs = link_runtime(placed, objects, original, (text_va, game_end + 1),
+                                             runtime, flags)
     fills, skip = {}, 0
     for attempt in range(4):
         data = bind_data(placed, data_va, data_size, initial, (text_va, game_end + 1), skip)
         extra = [filler(name, flags_, size)[0] for name, (flags_, size) in fills.items()]
-        with exe_options(link_order="source", ldflags=flags):
-            build.link_exe([data, *placed, *extra], customize=False)
+        with exe_options(link_order="source", ldflags=flags, libs=libs):
+            build.link_exe([data, *placed, *members, *extra], customize=False)
         ours = sections(build.EXE)
         changed = False
         for name, flags_ in ((".text", coff.TEXT), (".rdata", coff.RDATA)):
