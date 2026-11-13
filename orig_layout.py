@@ -93,6 +93,8 @@ def read_named_rows():
 LAST_BOUND = {}  # name: address, of bind_data's last call
 PLACED_AT = {}  # (object, section): the address place_code gave a function
 EXTRA_ROWS = []  # (address, size, [symbols]) the project adds for the link only
+ORIGINAL_DATA = None  # [(start, end, reason)] the original may still supply, from link()
+LAST_SUPPLIED = []  # addresses of the nonzero bytes bind_data's last call took from the original
 
 
 def read_rows():
@@ -611,9 +613,37 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
                   f, indent=1)
     print(f"bound {len(bound)} globals, {len(relocs)} pointers, {sum(own):#x} bytes compiled, "
           f"{len(supplied):#x} nonzero bytes from the original")
+    LAST_SUPPLIED[:] = [data_start + at for at in supplied]
     LAST_BOUND.clear()
     LAST_BOUND.update(bound)
     return paths
+
+
+def check_original_data(supplied):
+    """Fails when the original supplies nonzero game data (addresses)
+    outside the ranges link()'s original_data allows; without
+    original_data, warns."""
+    if ORIGINAL_DATA is None:
+        if supplied:
+            print(f"warning: {len(supplied)} nonzero bytes of game data come from the original")
+        return
+    stray, used = [], set()
+    for address in supplied:
+        hit = next((i for i, (lo, hi, _) in enumerate(ORIGINAL_DATA) if lo <= address < hi), None)
+        if hit is None:
+            if stray and address - stray[-1][1] <= 4:
+                stray[-1][1] = address + 1
+            else:
+                stray.append([address, address + 1])
+        else:
+            used.add(hit)
+    for i, (lo, hi, why) in enumerate(ORIGINAL_DATA):
+        if i not in used:
+            print(f"warning: nothing comes from the original at {lo:#x}-{hi:#x} ({why}) any more")
+    if stray:
+        where = ", ".join(f"{lo:#x}-{hi:#x}" for lo, hi in stray[:8])
+        raise ValueError(f"the original supplies game data no initializer recovers, at {where}"
+                         f"{' ...' if len(stray) > 8 else ''}: define it, or allow it in original_data")
 
 
 STATIC_SUFFIX = re.compile(r"\$S\d+$")
@@ -1297,7 +1327,8 @@ def order_imports(exe_path, map_path, relocs_path, original):
     return moved
 
 
-def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=(), data_libraries=()):
+def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime=(), data_libraries=(),
+         original_data=None):
     """Links build/<name>.exe from the exe's objects in the original's layout.
     extra_rows are (address, size, [symbols]) rows for functions symbols.csv
     does not list, such as a source file's static initializers. runtime
@@ -1306,8 +1337,12 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
     libraries (like dxguid.lib) whose members the original has between
     the game's constants and the runtime's: they are linked as objects
     there, and the game's constants (.rdata) are bound at their original
-    addresses before them."""
+    addresses before them. original_data, [(start, end, reason)], lists
+    the only ranges where the original may still supply nonzero game
+    data; anything else it supplies fails the link."""
+    global ORIGINAL_DATA
     EXTRA_ROWS[:] = extra_rows
+    ORIGINAL_DATA = original_data
     os.makedirs(LAYOUT, exist_ok=True)
     original = compare_exe.PE(project.ORIGINAL)
     text_va, text_size = original.sections[".text"][:2]
@@ -1401,6 +1436,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
                 changed = True
         if not changed:
             break
+    check_original_data(LAST_SUPPLIED)
     # The linker orders each DLL's imports its own way: link again with
     # base relocations (an exe's default is /FIXED) to find every pointer
     # to them, and reorder.
