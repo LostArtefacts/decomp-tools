@@ -597,10 +597,18 @@ def bind_data(objects, data_start, data_size, initial=None, code_range=None, ski
         index = bisect.bisect_right(starts_sorted, data_start + at) - 1
         owner = f"{starts_sorted[index]:#x} {names[starts_sorted[index]]}" if index >= 0 else "?"
         runs[owner] = runs.get(owner, 0) + 1
+    spans = []
+    for at in supplied:
+        if spans and at - spans[-1][1] <= 4:
+            spans[-1][1] = at + 1
+        else:
+            spans.append([at, at + 1])
     with open(os.path.join(LAYOUT, "data.json"), "w") as f:
         json.dump({"bound": len(bound), "pointers": len(relocs), "unbound": missing,
                    "compiled_bytes": sum(own), "from_original": len(supplied),
-                   "from_original_by_symbol": runs}, f, indent=1)
+                   "from_original_by_symbol": runs,
+                   "from_original_spans": [f"{data_start + s:#x}+{e - s:#x}" for s, e in spans]},
+                  f, indent=1)
     print(f"bound {len(bound)} globals, {len(relocs)} pointers, {sum(own):#x} bytes compiled, "
           f"{len(supplied):#x} nonzero bytes from the original")
     LAST_BOUND.clear()
