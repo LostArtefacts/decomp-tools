@@ -533,7 +533,62 @@ def sched_region():
     SCHED.clear()
 
 
-def main():
+
+# Range records have a numeric ID at +0x1c, distinct from the backend
+# symbol slot at symbol+0x1c. Freed records retain that ID when reused.
+def range_info(rng: int) -> str:
+    sym = rd(rng)
+    if not sym:
+        origin = "empty"
+    elif rd(sym + 4, 1) == 13:
+        node = rd(sym + 0x28)
+        origin = "literal{%s}" % describe(node, 1)
+        if rd(node + 8, 1) == 3:
+            source = rd(node + 0x14)
+            origin += " offset=%d" % sx32(rd(source + 0x24))
+    else:
+        origin = symbol(sym)
+    return "%s lr=%d be=%x range=%x sym=%x" % (
+        origin, rd(rng + 0x1c), rd(sym + 0x1c) if sym else 0, rng, sym)
+
+
+def ranges_reset() -> None:
+    out("range pool reset: free=%x next-ID=%d" % (rd(0x107ae038), rd(0x1079d74c)))
+
+
+def ranges_allocated() -> None:
+    rng = reg("esi")
+    out("range allocated: %s caller=%x free-head=%x next-ID=%d" % (
+        range_info(rng), rd(reg("esp") + 8), rd(0x107ae038), rd(0x1079d74c)))
+
+
+
+def ranges_pruned() -> None:
+    sym = reg("esi")
+    aux = rd(sym + 0x30)
+    rng = rd(aux + 0xc)
+    uses = sx32(rd(aux + 0x14))
+    out("literal prune: bucket=%d counter=%d keep=%s %s" % (
+        (reg("ebx") - 0x1079d750) // 4, uses, uses >= 1, range_info(rng)))
+
+
+def ranges_freed() -> None:
+    caller = rd(reg("esp"))
+    bucket = " bucket=%d" % ((reg("ebx") - 0x1079d750) // 4) if caller == 0x1072ce7c else ""
+    out("range freed:%s %s caller=%x old-head=%x" % (
+        bucket, range_info(reg("ecx")), caller, rd(0x107ae038)))
+
+
+def ranges_split_order() -> None:
+    node = reg("ebx")
+    entries: list[str] = []
+    while node and len(entries) < 1024:
+        entries.append(range_info(node))
+        node = rd(node + 0x14)
+    out("-- split materialization order: " + " ; ".join(entries))
+
+
+def main() -> None:
     global inf
     gdb.execute("set pagination off")
     gdb.execute("set confirm off")
@@ -587,6 +642,12 @@ def main():
             for a in ADDR["use"]:
                 Stop(a, glob_use)
             Stop(ADDR["thru"], glob_thru)
+    if "ranges" in WHAT and C2 == "vc6" and BUILD == "8447":
+        Stop(0x1072cb16, ranges_reset)
+        Stop(0x1072124e, ranges_allocated)
+        Stop(0x107213c6, ranges_freed)
+        Stop(0x1072ce61, ranges_pruned)
+        Stop(0x1073e958, ranges_split_order)
     print("== %s" % FUNC)
     gdb.execute("continue")
 

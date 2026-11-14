@@ -286,6 +286,52 @@ stream, counting it in a particular block, and assigning it a register
 are separate decisions. Do not infer the timing of if-conversion just
 from an absent constant in `--global`.
 
+### Rule C2: discarded candidates recycle live-range IDs
+
+A live-range record has a numeric ID at `range+0x1c`. It is distinct from
+its backend symbol's slot at `symbol+0x1c`. The numeric ID matters after
+coloring: round-start split materialization enumerates range IDs, so two
+compiles can have identical G1 priorities, positions, registers and split
+rounds, yet insert reloads in a different order.
+
+Build 8447 resets the range free list to empty and the next ID to 1 at the
+start of each function (0x1072cb05..0x1072cb11). Candidate interning first
+allocates ranges for eligible numeric/address constants. Its 64-bucket
+hash table is at 0x1079d750. Numeric candidates hash as unsigned value
+modulo 64; a class 3 symbol-address candidate hashes the underlying
+frontend symbol ID modulo 64 (0x1072c7c1..0x1072c7e5), not its ordinary
+backend slot. Different address offsets/types may have separate candidate
+records in the same bucket; the address offset does not contribute to
+this bucket key.
+
+Pruning at 0x1072cdf4 scans buckets 0..63, newest candidate first within a
+bucket. A candidate whose pruning use counter at `candidate+0x30->+0x14`
+is less than 1 has its range freed (0x1072ce61..0x1072ce85). The exact
+semantic interpretation of this counter is not established here; it is
+separate from C1's earlier repeated-literal flag. Freeing pushes the
+record onto a LIFO free list and preserves its numeric ID
+(0x107213c6..0x10721428). Named ranges allocated afterwards pop that list
+(0x107211c3); they inherit the discarded candidates' IDs. Thus a header
+can change IDs in a function whose preprocessed body is unchanged.
+
+Measured in FireWeapon, baseline versus `/D_MT`, with all body text fixed:
+Slist's frontend ID moves from 0xe7c to 0xe81. The two Slist-address
+candidates (offsets 0 and 4, initial range IDs 7 and 9) move from bucket 60
+to bucket 1. The unused bum_vsrc address moves from bucket 25 to bucket
+30. Pruned range-ID push order is `11, 2, 14, 9, 7, 8` at baseline and
+`11, 9, 7, 2, 14, 8` with `_MT`. The subsequent named allocation order is
+`angles, src, target, weapon_type, ammo, winfo`; their IDs become
+`8, 7, 9, 14, 2, 11` versus `8, 14, 2, 7, 9, 11`. Ordinary backend slots
+and printed G1 coloring decisions remain the same.
+
+The baseline candidate table plus a frontend-symbol delta of 5 predicts
+both pruning orders and every initial named-range ID. This modulo 64
+model is for candidate bucketing, not a claim that whole generated code
+has a 64-period: other frontend-dependent passes can also change.
+`c2oracle.py SRC NAME --ranges` (currently build 8447) prints pool resets,
+candidate pruning, free/reuse events, IDs and split materialization lists
+without modifying compilation. Raw range/symbol addresses are retained.
+
 ### Rule G2: a variable assigned in two steps is two ranges
 
 Each definition of a variable starts its own live range (web), so
@@ -517,18 +563,34 @@ no edge). Five spellings of the cast store changed nothing; a volatile
 store to frame_number (`*(volatile sint16 *)&item->frame_number = ...`)
 keeps the order and matches.
 
-## Rule R1: where split ranges get their loads and stores
+## Rule R1: split materialization follows numeric range-ID order
 
-When the allocator splits a range (the "(split)" line of --global), the
-pieces go back on the list and, at the next round start (0x107207f5
-calls 0x10723b3e for the split range), the code that moves the value
-between memory and register at the piece boundaries is inserted
-(0x10723c73 -> 0x10724868 makes the tuples). So the reloads at a block
-end are created in the order their ranges were split. In TestTriggers
-the reloads before the jump to the join come out `edx <- trigger`,
-`edi <- flags` (both priority 0x14000, so the scheduler keeps that IL
-order); trigger was split in a later round than flags, so the later
-split's reload sits first: insertion is at a fixed point, newest first
-(inferred from this one case, not yet checked in a micro test).
-Retail has edi first, which needs flags split after trigger, i.e. flags
-lower in priority than trigger (-326) in trigger's round.
+For build 8447, the round-start split-materialization driver is 0x1073e8f6.
+It enumerates the pending range-ID bitset using 0x107021ba, looks up ranges
+through 0x107232ec, and builds a linked list using `range+0x14`. At
+0x1073e958 the list is complete and ordered by ascending numeric live-range
+ID. Later generated reloads can therefore depend on recycled IDs (rule
+C2), not only on which ranges were colored or split first.
+
+FireWeapon is a controlled counterexample to inferring reload order from
+G1's printed split-round order alone. Its baseline first materialization
+list visits src (ID 7) before winfo (ID 11); with `_MT` it visits winfo
+(ID 11) before src (ID 14). The resulting join block has the reloads in
+reverse order: baseline `edi <- winfo` then `ebp <- src`; with `_MT`,
+`ebp <- src` then `edi <- winfo`. Both instructions have scheduler
+priority 0x14000, and the scheduler keeps the already-different IL order.
+
+A debugger-only intervention at 0x1073e958 swaps only src/winfo list
+positions, leaving range IDs, bitsets, source and allocation priorities
+unchanged. In both directions it produces the exact other context's
+739-byte relocation-resolved FireWeapon: baseline+swap becomes `_MT`;
+`_MT`+swap becomes baseline and matches retail. This proves that list order
+mediates the observed four-byte difference; no game source intervention
+was retained.
+
+The previous TestTriggers diagnosis (trigger split after flags, therefore
+newest split's reload first, hence lower flags' priority) was an inference
+from one case. It is not established as the controlling rule there.
+Trace numeric IDs and actual materialization lists with `--ranges` before
+changing priorities. A same-round range-ID/list-order change can alter
+reload ordering while the normal G1 trace stays identical.

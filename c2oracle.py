@@ -1,6 +1,6 @@
 r"""Shows the decisions MSVC's back end (VC5's C2.EXE, VC6's c2.dll) makes for one function.
 
-    c2oracle.py SRC NAME [--sort] [--regs] [--global] [--inline] [--x87] [--sched] [--raw]
+    c2oracle.py SRC NAME [--sort] [--regs] [--global] [--inline] [--x87] [--sched] [--ranges] [--raw]
 
 SRC is a file in src/ and NAME a function it defines (or any other .c
 file, compiled with the project's cflags). The file is compiled as
@@ -36,6 +36,10 @@ usually gets wrong, and it prints them for NAME:
           block with its loop multiplier and each range's priority
           change there (referenced: + multiplier * ranges * weights;
           live through: - multiplier * ranges).
+  --ranges VC6 build 8447: live-range IDs, candidate pruning buckets,
+          record reuse and round-start split materialization order. Numeric
+          range IDs differ from backend symbol slots; header context can
+          change recycled IDs without changing allocation priorities.
   --x87   VC5: the scheduler's pre-pass (it runs on blocks with x87 code,
           before register allocation): for each block, its tuples in
           IL order with the position the scheduler gave each one and
@@ -233,7 +237,7 @@ def back_end(flags, name, what, raw, keep, src=None):
     return out
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("src")
     ap.add_argument("name")
@@ -244,9 +248,12 @@ def main():
     ap.add_argument("--inline", action="store_true")
     ap.add_argument("--global", dest="glob", action="store_true")
     ap.add_argument("--raw", action="store_true")
+    ap.add_argument("--ranges", action="store_true")
     a = ap.parse_args()
-    what = [w for w in ("sort", "regs", "x87", "sched", "inline") if getattr(a, w)]
+    what = [w for w in ("sort", "regs", "x87", "sched", "inline", "ranges") if getattr(a, w)]
     what = (what + ["global"] if a.glob else what) or ["sort", "regs", "sched" if VC6 else "x87"]
+    if a.ranges and (not VC6 or c2_build() != 8447):
+        sys.exit("--ranges currently requires VC6 c2.dll build 8447")
     keep = os.path.join(WORK, "keep")
     if VC6:
         if os.path.isdir(keep):
