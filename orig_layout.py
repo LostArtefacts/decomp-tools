@@ -70,6 +70,8 @@ import orig_runtime
 import project
 
 LAYOUT = "build/layout"
+LATE_GROUP = ".text$v"  # the game's code past code_end, after the libraries' code
+LATE_RANGE = []  # [start, end) of the game's code past code_end
 PLACED = "build/obj_placed"
 COMDAT = 0x1000  # IMAGE_SCN_LNK_COMDAT
 ALIGN_MASK = 0x00F00000
@@ -328,6 +330,7 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
     removed = set()
     asm = collections.defaultdict(set)  # path: promoted section numbers
     unknown = []
+    late = set()  # addresses past code_end: game code the original has after the libraries'
     for path in objects:
         obj = coff.Object(path)
         stem = os.path.splitext(os.path.basename(path))[0]
@@ -349,10 +352,16 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
                     removed.add((path, number))
                     folded.append(sym.name)
                     continue
-                unknown.append((path, number, sym.name))
-                continue
+                if address is None or address < code_end:
+                    unknown.append((path, number, sym.name))
+                    continue
+                late.add(address)
             if not sec.flags & COMDAT:
-                if rel.lower().endswith(build.ASM_EXTS) and section_symbol(obj, number) is not None:
+                # Data a C file puts in the code section (a #pragma
+                # data_seg(".text") string in a Steam code cave) is placed
+                # like an assembled function.
+                if section_symbol(obj, number) is not None and (
+                        rel.lower().endswith(build.ASM_EXTS) or sec.name.split("$")[0] == ".text"):
                     asm[path].add(number)
                 else:
                     unknown.append((path, number, sym.name))
@@ -391,24 +400,37 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
             else:
                 unknown.append((piece.path, piece.section, piece.name))
     order, moved, pads, renames = [], [], {}, {}
-    cursor = code_start
-    for i, address in enumerate(addresses):
-        group = chosen[address]
-        size = max(len(p.data) for p in group)
-        if cursor != address:
-            moved.append((group[0].name, address, cursor))
-        start = max(cursor, address)
-        if i + 1 < len(addresses):
-            end = max(addresses[i + 1], start + size)
-        else:
-            end = start + size + (-(start + size) % 16)
-        for piece in group:
-            pads[piece.path, piece.section] = piece.data + bytes([CODE_FILL]) * (end - start - len(piece.data))
-            PLACED_AT[piece.path, piece.section] = start
-            if piece.static:
-                renames[piece.path, piece.section] = piece.name
-        order.append(group[0].name)
-        cursor = end
+    # The game's code, then the code the original has past code_end (tomb4's
+    # zlib, after ddraw's and dinput's library code), as LATE_GROUP.
+    late_sections, cursor = {}, code_start
+    ranges = [[a for a in addresses if a not in late], sorted(late)]
+    for which, span in enumerate(ranges):
+        if which and span:
+            cursor = span[0]
+            LATE_RANGE[:] = [span[0], None]
+        for i, address in enumerate(span):
+            group = chosen[address]
+            size = max(len(p.data) for p in group)
+            if cursor != address:
+                moved.append((group[0].name, address, cursor))
+            start = max(cursor, address)
+            if i + 1 < len(span):
+                end = max(span[i + 1], start + size)
+            else:
+                end = start + size + (-(start + size) % 16)
+                if not which and end > code_end:
+                    end = start + size  # a function too large: what follows may align it away
+            for piece in group:
+                pads[piece.path, piece.section] = piece.data + bytes([CODE_FILL]) * (end - start - len(piece.data))
+                PLACED_AT[piece.path, piece.section] = start
+                if piece.static:
+                    renames[piece.path, piece.section] = piece.name
+                if which:
+                    late_sections[piece.path, piece.section] = address == span[0]
+            order.append(group[0].name)
+            cursor = end
+        if which and span:
+            LATE_RANGE[1] = cursor
     if code_start not in pieces:
         moved.insert(0, ("(start)", code_start, min(addresses) if addresses else code_start))
     # The linker drops a function nothing refers to, /INCLUDE or not (the
@@ -467,6 +489,10 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
         empty = orig_runtime.empty_data(obj)
         for number in range(1, len(obj.sections) + 1):
             index = section_symbol(obj, number)
+            if obj.sections[number - 1].flags & coff.CODE and not obj.sections[number - 1].data:
+                # An empty code section (each C object's .text) still
+                # aligns what follows the game's code to 16.
+                rewriter.set_flags(number, (rewriter.flags(number) & ~ALIGN_MASK) | ALIGN_1)
             if (path, number) in removed:
                 rewriter.remove(obj, number)
                 continue
@@ -478,6 +504,16 @@ def place_code(objects, code_start, code_end, fold=None, adopt=None):
             data = pads[path, number]
             rewriter.data[number] = data
             rewriter.set_flags(number, (rewriter.flags(number) & ~ALIGN_MASK) | ALIGN_1)
+            if (path, number) in late_sections:
+                rewriter.set_name(number, LATE_GROUP)
+                if index is not None:
+                    rewriter.symtab[index * 18:index * 18 + 8] = LATE_GROUP.encode().ljust(8, b"\0")
+                if late_sections[path, number]:
+                    # The group starts as aligned as the original's address.
+                    at = PLACED_AT[path, number]
+                    align = min(16, at & -at)
+                    rewriter.set_flags(number, (rewriter.flags(number) & ~ALIGN_MASK)
+                                       | (align.bit_length() << 20))
             if index is not None and rewriter.symtab[index * 18 + 17]:
                 rewriter.set_aux_length(index, len(data))
             if (path, number) in renames:
