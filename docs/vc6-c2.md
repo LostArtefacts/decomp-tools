@@ -332,6 +332,34 @@ has a 64-period: other frontend-dependent passes can also change.
 candidate pruning, free/reuse events, IDs and split materialization lists
 without modifying compilation. Raw range/symbol addresses are retained.
 
+Out-of-sample controls on two red functions qualify this rule. In
+TestTriggers, the initial table contains 46 numeric candidates and no
+symbol-address candidates. Its free list is exhausted before flags and
+trigger are allocated, so they receive fresh IDs 48 and 55. A prediction
+that adding io.h would preserve those IDs and the function bytes was
+confirmed, despite a frontend-ID shift of 218. A context change that leaves
+this candidate table, pruning counters and allocation sequence intact
+cannot change their IDs through the initial address-bucket mechanism.
+
+In SasControl, adding math.h moves the discarded sas_fire address from
+bucket 59 to 22. A model evaluated after pruning but before named-range
+allocation correctly predicts all 60 initial allocation events: iDistance
+moves from ID 36 to 12 and items from 4 to 36. The first materialization list
+stays unchanged; freeing items before that round makes its first literal-0
+child inherit ID 36 instead of 4. The next list consequently visits
+iDistance before that literal, reversing their previous order. These
+predictions were confirmed, but the final function bytes remain identical.
+The stdlib.h and process.h controls also predict all 60 events correctly.
+Those initial predictions were recorded before allocation and emission.
+The later child/list prediction used the baseline lifecycle and was recorded
+before inspecting the changed later trace, after that compile had completed.
+Changed IDs or list order alone are not evidence of changed machine code.
+For the R1-list-order route with otherwise unchanged coloring, the changed
+order must affect instructions in a common materialized region and survive
+scheduling. This is not a general condition for header effects: numeric IDs
+can also participate in other allocator tie decisions and change coloring.
+Inspect the first actual divergence rather than infer a byte change from IDs.
+
 ### Rule G2: a variable assigned in two steps is two ranges
 
 Each definition of a variable starts its own live range (web), so
@@ -588,9 +616,18 @@ unchanged. In both directions it produces the exact other context's
 mediates the observed four-byte difference; no game source intervention
 was retained.
 
-The previous TestTriggers diagnosis (trigger split after flags, therefore
-newest split's reload first, hence lower flags' priority) was an inference
-from one case. It is not established as the controlling rule there.
+TestTriggers provides a separate held-out intervention. Its five remaining
+differences are reversed `edi <- flags` / `edx <- trigger` reload pairs.
+Before inspecting the intervention object, the model predicted that swapping
+only IDs 48 and 55 in its first materialization list would reverse all five
+pairs. The debugger-only swap produces all 2,764 retail bytes exactly, with
+no masked bytes or secondary differences. This proves the list-order
+mechanism applies to this red function, but is not a retained matching C
+solution: its initial numeric-only candidate table does not offer the
+same header-address-bucket lever as FireWeapon.
+
+The previous diagnosis (trigger split after flags, therefore newest split's
+reload first, hence lower flags' priority) was an inference from one case.
 Trace numeric IDs and actual materialization lists with `--ranges` before
 changing priorities. A same-round range-ID/list-order change can alter
 reload ordering while the normal G1 trace stays identical.
