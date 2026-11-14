@@ -98,7 +98,22 @@ def bin_file(name):
     return path
 
 
-VC6 = os.path.exists(bin_file("c2.dll"))
+# C2ORACLE_DLL=c2_8168.dll traces another c2.dll from the bin directory
+# instead of the project's c2.dll
+C2_DLL = os.environ.get("C2ORACLE_DLL", "c2.dll")
+VC6 = os.path.exists(bin_file(C2_DLL))
+
+
+def c2_build():
+    """c2.dll's build number (8168 for VC6 SP3's, 8447 for the later one),
+    from the version resource; c2gdb.py has an address set for each."""
+    with open(bin_file(C2_DLL), "rb") as f:
+        data = f.read()
+    at = data.find((0xFEEF04BD).to_bytes(4, "little"))
+    build = int.from_bytes(data[at + 14:at + 16], "little") if at >= 0 else 0
+    if build not in (8168, 8447):
+        sys.exit("%s is build %d; c2oracle knows 8168 and 8447 (see docs/vc6-c2.md)" % (C2_DLL, build))
+    return build
 
 
 def winpath(path):
@@ -188,7 +203,7 @@ def back_end(flags, name, what, raw, keep, src=None):
         env.pop("MSC_CMD_FLAGS")
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
-        env.update(C2REAL=build.host(build.BUILD["bin"] + "\\c2.dll"), C2O_BREAK="1")
+        env.update(C2REAL=build.host(build.BUILD["bin"] + "\\" + C2_DLL), C2O_BREAK="1", C2O_BUILD=str(c2_build()))
         cmd = [build.host(build.BUILD["bin"] + "\\cl.exe"), "/nologo", "/c", "/B2" + winpath(stand_in()),
                "/Fo" + winpath(os.path.join(keep, "c2.obj")), *compile_args(src)]
         cwd = ROOT

@@ -1,8 +1,9 @@
 """gdb side of c2oracle.py: breakpoints in C2.EXE (VC5 SP3, 11.00.7022)
-or c2.dll (VC6 SP3, 12.00.8168).
+or c2.dll (VC6 SP3, 12.00.8168, or the later 12.00.8447).
 
 Loaded with `gdb -x`; reads its settings from the environment
-(C2O_PORT, C2O_FUNC, C2O_WHAT, C2O_RAW, C2O_C2 = vc5 or vc6). Every line
+(C2O_PORT, C2O_FUNC, C2O_WHAT, C2O_RAW, C2O_C2 = vc5 or vc6, C2O_BUILD =
+c2.dll's build, 8168 or 8447). Every line
 meant for the user starts with "| " (or "== " for a function header).
 The addresses and structure offsets are documented in ../docs/vc5-c2.md
 and ../docs/vc6-c2.md; each back end's are in ADDR below.
@@ -15,6 +16,7 @@ FUNC = os.environ["C2O_FUNC"]
 WHAT = set(os.environ.get("C2O_WHAT", "sort").split(","))
 RAW = bool(os.environ.get("C2O_RAW"))
 C2 = os.environ.get("C2O_C2", "vc5")
+BUILD = os.environ.get("C2O_BUILD", "8168")
 
 # Where each back end decides things. c2.dll is VC5's C2.EXE rebuilt with
 # small changes: the structures carry over, the addresses and some of the
@@ -43,8 +45,29 @@ ADDR = {
         block=0x10714414, use=(0x10714C06, 0x10714C2E), thru=0x10714C53, weight_reg="esi",
         inline=False, x87=False, sched=True,
         sched_pass=0x1079F270, sched_nodes=0x1079F248, sched_took=0x1073C05E, sched_region=0x1073A0AA,
+        sched_shifts=0x10799204,
+        pick_pipe=0x1073C1E8, pick_hook=0x1073C1FB, pick_regs=0x1073C223, pick_late=0x1073C245, pick_take=0x1073C255,
     ),
-}[C2]
+}
+# 12.00.8447 (a later VC6 SP3 c2.dll, the one tr04's original was built
+# with) links its functions in another order but keeps every global and
+# structure where 8168 has them, so only the code addresses move. Each
+# was matched by its surrounding instructions (identical in both builds
+# but for relocated addresses), see docs/vc6-c2.md.
+ADDR["vc6-8447"] = dict(
+    ADDR["vc6"],
+    sort=0x1070D196,
+    picker=0x10733273, assign=0x1073356B, rot_reset=0x10731A63,
+    paths={0x10733340: "round robin", 0x107333EF: "preferred", 0x10733563: "first free", 0x10733489: "evicted"},
+    color=0x107237A7, split=0x1072D6E9, assigned=0x1072D70F, skipped=0x1072D653, round=0x1072D5C5,
+    block=0x1072255A, use=(0x10722D4C, 0x10722D74), thru=0x10722D99,
+    sched_took=0x10739628, sched_region=0x1073AE98,
+    pick_pipe=0x107397B2, pick_hook=0x107397C5, pick_regs=0x107397ED, pick_late=0x1073980F, pick_take=0x1073981F,
+)
+if C2 == "vc6" and BUILD != "8168":
+    C2 += "-" + BUILD
+ADDR = ADDR[C2]
+C2 = C2[:3]
 CUR_FUNC = ADDR["cur_func"]
 
 OPS = {
@@ -462,7 +485,7 @@ def sched_took():
         SCHED[rd(n + 0x36, 2)] = (len(SCHED) + 1, rd(n + 0x2C), (sched_tuple6 if C2 == "vc6" else sched_tuple)(rd(n + 0x1C)), n)
 
 
-# VC6 cycle picker 0x1073c17b (ecx = cycle): walks the ready list from
+# VC6 cycle picker 0x1073c17b (8168 addresses here; ecx = cycle): walks the ready list from
 # the head and takes a node unless the pairing hook [0x10799214] returns
 # < 0 for it (0x1073c1e8), 0x1073c4ad objects (0x1073c1fb), the register
 # check 0x1073c505 objects (0x1073c223, only when [0x107ac0b0] is set) or
@@ -485,7 +508,7 @@ def pick_pipe():
 
 def sched_region():
     if RAW and C2 == "vc6" and SCHED:
-        w = rd(0x10799204)
+        w = rd(ADDR["sched_shifts"])
         out("-- priority shifts: %s" % " ".join("%d" % sx16(rd(w + 2 * i, 2)) for i in range(7)))
     if TRACE:
         out("-- picker: cycle: IL position, decision")
@@ -545,11 +568,11 @@ def main():
         Stop(ADDR["sched_took"], sched_took)
         Stop(ADDR["sched_region"], sched_region)
         if RAW and C2 == "vc6":
-            Stop(0x1073C1E8, pick_why(pick_pipe))
-            Stop(0x1073C1FB, pick_why(lambda: "0x1073c4ad says %d" % reg("eax")))
-            Stop(0x1073C223, pick_why(lambda: "register check says %d" % reg("eax")))
-            Stop(0x1073C245, pick_why(lambda: "earliest %d, cycle + busy %d" % (reg("eax"), reg("edx"))))
-            Stop(0x1073C255, pick_why(lambda: "TAKEN"))
+            Stop(ADDR["pick_pipe"], pick_why(pick_pipe))
+            Stop(ADDR["pick_hook"], pick_why(lambda: "0x1073c4ad (8168) says %d" % reg("eax")))
+            Stop(ADDR["pick_regs"], pick_why(lambda: "register check says %d" % reg("eax")))
+            Stop(ADDR["pick_late"], pick_why(lambda: "earliest %d, cycle + busy %d" % (reg("eax"), reg("edx"))))
+            Stop(ADDR["pick_take"], pick_why(lambda: "TAKEN"))
     if "global" in WHAT:
         if ADDR["round"]:
             Stop(ADDR["round"], lambda: out("-- round (pieces of the split range get their loads and stores)"))
