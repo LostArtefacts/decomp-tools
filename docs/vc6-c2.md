@@ -341,6 +341,26 @@ confirmed, despite a frontend-ID shift of 218. A context change that leaves
 this candidate table, pruning counters and allocation sequence intact
 cannot change their IDs through the initial address-bucket mechanism.
 
+Initial named-range allocation scans eligible backend-symbol storage,
+not lexical C first-use order (8447: 0x1072ce1a..0x1072ced6, chunks rooted
+at 0x1079bc50, record stride 0x54). It allocates the existing webs attached
+to each symbol. In TestTriggers, restoring the reference's used
+camera_flags alias moves flags/trigger backend slots from 0x17/0x1b to
+0x18/0x1c, yet leaves their numeric IDs 48/55 and every function byte
+unchanged. Reusing trigger for the earlier quad calculation also leaves
+IDs 48/55, despite that real source use and slots moving to 0x16/0x1a.
+Thus an earlier source use or changed backend slot does not establish an
+earlier surviving named range. The preceding representative/temporary
+canonicalization mechanism has not been reversed in these experiments.
+
+A used early alias can also change more than birth order. Keeping the
+initial flags word in trigger across RefreshCamera, then copying to flags,
+gives trigger two initial webs 48/49 and flags 51. But flags no longer
+appears in the first split-materialization list, and the function has
+broad differences. This is not equivalent to swapping the original pair's
+IDs or list positions. Verify web decomposition and G1 decisions before
+predicting reload order from a source alias.
+
 In SasControl, adding math.h moves the discarded sas_fire address from
 bucket 59 to 22. A model evaluated after pruning but before named-range
 allocation correctly predicts all 60 initial allocation events: iDistance
