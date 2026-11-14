@@ -1376,6 +1376,7 @@ def order_imports(exe_path, map_path, relocs_path, original):
     slots, moved = {}, 0  # old IAT address: new
     names_old, names_new = set(), set()
     entry_moves = []  # (old hint/name address, new, size)
+    ordinal_moves = []  # (new IAT address, new lookup address, ordinal)
     for dll, (_, entries) in ours.items():
         if dll not in theirs:
             continue
@@ -1389,7 +1390,11 @@ def order_imports(exe_path, map_path, relocs_path, original):
             slots[iat] = new[1]
             if iat != new[1]:
                 moved += 1
-            if hint is not None:
+            if hint is None:
+                # An import by ordinal: the slot holds the ordinal itself.
+                new_ilt = entries[0][2] + new[1] - target[0][1] if ilt is not None else None
+                ordinal_moves.append((new[1], new_ilt, 0x80000000 | int(func[1:])))
+            else:
                 size = len(func) + 3 + (len(func) + 3) % 2
                 names_old.update(range(hint, hint + size))
                 names_new.update(range(new[3], new[3] + size))
@@ -1408,6 +1413,10 @@ def order_imports(exe_path, map_path, relocs_path, original):
         for old, new in ((iat, new_iat), (ilt, new_ilt)):
             if new is not None:
                 struct.pack_into("<I", data, pe.offset(new), name_at - pe.base)
+    for new_iat, new_ilt, value in ordinal_moves:
+        for at in (new_iat, new_ilt):
+            if at is not None:
+                struct.pack_into("<I", data, pe.offset(at), value)
     relocated = compare_exe.PE(relocs_path)
     count = 0
     for site in base_relocations(relocs_path):
