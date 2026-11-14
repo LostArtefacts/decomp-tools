@@ -1268,6 +1268,22 @@ def group_start(map_path, section, group):
     return None
 
 
+def drop_bound_comdats(paths, bound):
+    """Removes the objects' COMDAT data sections whose symbol 000_rdata.obj
+    defines: the original's linker kept the game's copy (like a 1.0 the
+    runtime's testfdiv shares)."""
+    for path in paths:
+        obj = coff.Object(path)
+        drop = [number for number, sec in enumerate(obj.sections, 1)
+                if sec.flags & COMDAT and not sec.flags & coff.CODE
+                and (key := key_symbol(obj, number)[1]) is not None and key.name in bound]
+        if drop:
+            rewriter = Rewriter(path)
+            for number in drop:
+                rewriter.remove(obj, number)
+            rewriter.write(path)
+
+
 def data_members(map_path, libraries, original, refs, lo, hi):
     """The members of data-only libraries (like dxguid.lib) the link uses
     whose symbols the original has in [lo, hi), as objects in the order
@@ -1287,8 +1303,9 @@ def data_members(map_path, libraries, original, refs, lo, hi):
             obj = coff.Object(member)
             if any(sec.flags & coff.CODE for sec in obj.sections):
                 continue
-            at = {rows.get(y.name, names.get(y.name)) for y in obj.externals() if y.section > 0}
-            at.discard(None)
+            # The member's start, from each symbol the original names.
+            at = {a - y.value for y in obj.externals() if y.section > 0
+                  and (a := rows.get(y.name, names.get(y.name))) is not None}
             if len(at) == 1 and lo <= min(at) < hi:
                 found.append((min(at), member))
     return sorted(found)
@@ -1485,8 +1502,11 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         start = group_start(os.path.join(LAYOUT, "preliminary.map"), number, ".rdata")
         if start is not None:
             start += rdata_va
+            # A runtime COMDAT (like testfdiv's 1.0) may sit at the game's
+            # copy, which the original's linker kept in its place.
             ends = [a for (p, n), a in info["bases"].items()
                     if info["objs"][p].sections[n - 1].name.startswith(".rdata")
+                    and not info["objs"][p].sections[n - 1].flags & COMDAT
                     and start <= a < rdata_va + rdata_size]
             end = min(ends, default=rdata_va + rdata_size)
             guids = data_members(os.path.join(LAYOUT, "preliminary.map"), data_libraries, original,
@@ -1496,6 +1516,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
                 placed, sources, original, refs, (start, end), (".rdata",), ".rdata", "game-rdata.json")
             constants = [bind_rdata(os.path.join(PLACED, "000_rdata.obj"), start, end, original,
                                     r_bindings, r_relocs, r_contents, initial_data == "original")]
+            drop_bound_comdats(members, r_bindings)
         bindings, data_relocs, compiled = bind_game_data(placed, sources, original, refs,
                                                          (data_va, data_va + data_size))
         for name, address in info["commons"].items():
