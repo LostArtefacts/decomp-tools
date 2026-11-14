@@ -1196,6 +1196,11 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
             aliases[owner].append((name, sym.value))
         dropped[path, number] = rename
     orig_runtime.write(members, Rewriter, aliases, dropped, unaligned)
+    located = dict(code_at)
+    for (path, number), address in bases.items():
+        if objs[path].sections[number - 1].flags & coff.CODE:
+            located.setdefault((path, number), address)
+    pad_runtime_code(located, dropped)
     libs = list(build.EXE_CONFIG["libs"])
     last = max(i for i, n in enumerate(libs) if n.lower() in {r.lower() for r in runtime})
     for i in range(last + 1, len(libs)):
@@ -1219,6 +1224,9 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
     for obj in objs.values():
         commons -= {sym.name for sym in obj.externals() if sym.section > 0}
     info = {"bases": bases, "objs": objs,
+            "code_start": min(code_at.values(), default=runtime_range[0]),
+            "code_end": max((a + len(orig_runtime.trimmed(objs[p].sections[n - 1])) for (p, n), a in code_at.items()),
+                            default=runtime_range[0]),
             "commons": {n: a for n, a in names.items() if n in commons and data_va <= a < data_hi}}
     print(f"runtime: {len(members)} members, {len(code_at)} code sections matched, "
           f"{len(bases)} data sections found, {len(folded)} game functions folded into it, "
@@ -1264,6 +1272,140 @@ def loaded_members(lib_name, lib_path_, have, objects):
     if added:
         print(f"{lib_name}: {len(added)} members the map does not show")
     return added
+
+
+def foreign_code(map_path, info, code_end, runtime, paths):
+    """Lays out the code the original has outside the game's and the
+    runtime's, from libraries: import thunks and library code members
+    (dinput's dilib2), each as an object at its original offset, padded with
+    the original's 0xCC fill and aligned to 1, in groups the linker orders
+    by name: before the game's late code (.text$t), between it and the
+    runtime's (.text$w), and after the runtime's (.text$y). The linker
+    would put its own thunks and members after every object's code, and
+    align them as it pleases, so a red function's few bytes past code_end
+    would move everything after. An import library defines a thunk's
+    name too, so the objects (paths) refer to ours under another. Returns
+    the objects' paths."""
+    late = LATE_RANGE if LATE_RANGE else [info["code_start"], info["code_start"]]
+    bounds = [(".text$t", code_end, late[0]), (".text$w", late[1], info["code_start"]),
+              (".text$y", info["code_end"], 1 << 32)]
+    rows = {}
+    for address, _, names in read_rows():
+        for name in names:
+            rows.setdefault(name, address)
+    runtime_stems = {os.path.splitext(n)[0].lower() for n in runtime}
+    pattern = re.compile(r"^\s*0001:[0-9a-f]{8}\s+(\S+)\s+[0-9a-f]{8} (?:f )?\s*(\S+):(\S+)\s*$")
+    items = {}  # address: (kind, name or (lib, member), length)
+    with open(map_path, encoding="latin-1") as f:
+        for line in f:
+            m = pattern.match(line)
+            if not m or m.group(2).lower() in runtime_stems:
+                continue
+            symbol, lib, member = m.groups()
+            if member.lower().endswith(".dll"):
+                address = rows.get(symbol, rows.get(symbol.split("@")[0]))
+                if address is not None:
+                    items[address] = ("thunk", symbol, 6)
+                continue
+            if symbol not in rows:
+                continue
+            path = lib_path(lib + ".lib")
+            data = dict(orig_runtime.members(path)).get(member.lower()) if path else None
+            if data is None:
+                continue
+            out = os.path.join(PLACED, f"{lib.lower()}~{member.lower()}")
+            with open(out, "wb") as f2:
+                f2.write(data)
+            obj = coff.Object(out)
+            sym = next((y for y in obj.externals() if y.name == symbol), None)
+            if sym is None or sym.section <= 0 or not obj.sections[sym.section - 1].flags & coff.CODE:
+                continue
+            items[rows[symbol] - sym.value] = ("member", (out, sym.section), len(obj.sections[sym.section - 1].data))
+    out_paths, thunk_names, count = [], [], 0
+    for group, lo, hi in bounds:
+        span = sorted(a for a in items if lo <= a < hi)
+        runs = []  # [[kind, [(address, item)]]]
+        for address in span:
+            kind = items[address][0]
+            if runs and kind == "thunk" and runs[-1][0] == "thunk":
+                runs[-1][1].append((address, items[address]))
+            else:
+                runs.append([kind, [(address, items[address])]])
+        for r, (kind, entries) in enumerate(runs):
+            following = runs[r + 1][1][0][0] if r + 1 < len(runs) else None
+            last, (_, _, length) = entries[-1]
+            fill = following - last - length if following is not None and following >= last + length else 0
+            align = 0x00200000 if r == 0 else ALIGN_1  # the first as the linker's thunks; the rest by padding
+            if kind == "thunk":
+                names = [e[1][1] for e in entries]
+                data = b"".join(b"\xff\x25\0\0\0\0" for _ in names) + b"\xcc" * fill
+                path = os.path.join(PLACED, f"zzz_thunks{count}.obj")
+                coff.write_object(path, [(group, coff.TEXT & ~ALIGN_MASK | align, data,
+                                          [(6 * i + 2, "__imp_" + n, coff.DIR32) for i, n in enumerate(names)])],
+                                  {f"_layout_thunk{n}": (1, 6 * i) for i, n in enumerate(names)},
+                                  ["__imp_" + n for n in names], {})
+                thunk_names += names
+                count += 1
+            else:
+                (path, number) = entries[0][1][1]
+                obj = coff.Object(path)
+                rewriter = Rewriter(path)
+                rewriter.data[number] = bytes(obj.sections[number - 1].data) + b"\xcc" * fill
+                rewriter.set_name(number, group)
+                if r:
+                    rewriter.set_flags(number, rewriter.flags(number) & ~ALIGN_MASK | ALIGN_1)
+                index = section_symbol(obj, number)
+                if index is not None:
+                    rewriter.symtab[index * 18:index * 18 + 8] = group.encode().ljust(8, b"\0")
+                    if rewriter.symtab[index * 18 + 17]:
+                        rewriter.set_aux_length(index, len(rewriter.data[number]))
+                rewriter.write(path)
+            out_paths.append(path)
+    for obj_path in paths:
+        obj = coff.Object(obj_path)
+        hits = [(i, y.name) for i, y in enumerate(obj.symbols) if y and y.section == 0 and y.name in thunk_names]
+        if hits:
+            rewriter = Rewriter(obj_path)
+            for i, name in hits:
+                rewriter.rename_symbol(i, f"_layout_thunk{name}")
+            rewriter.write(obj_path)
+    print(f"laid out {len(out_paths)} runs of library code and {len(thunk_names)} import thunks as the original's")
+    return out_paths
+
+
+def pad_runtime_code(code_at, dropped):
+    """Pads each matched runtime code section with the original's 0xCC fill
+    up to the next one's original address, aligned to 1 but the first: the
+    linker aligns the start of the runtime's group (.text$x) to its
+    strictest section, 16, where the original's runtime starts at 4."""
+    for path in {p for p, _ in code_at}:
+        obj = coff.Object(path)
+        empty = [n for n, sec in enumerate(obj.sections, 1) if sec.flags & coff.CODE and not sec.data]
+        if empty:
+            rewriter = Rewriter(path)
+            for number in empty:
+                rewriter.set_flags(number, rewriter.flags(number) & ~ALIGN_MASK | ALIGN_1)
+            rewriter.write(path)
+    spans = sorted((a, p, n) for (p, n), a in code_at.items() if (p, n) not in dropped)
+    by_path = collections.defaultdict(list)
+    for i, (address, path, number) in enumerate(spans):
+        following = spans[i + 1][0] if i + 1 < len(spans) else None
+        by_path[path].append((number, address, following, i == 0))
+    for path, entries in by_path.items():
+        obj = coff.Object(path)
+        rewriter = Rewriter(path)
+        for number, address, following, first in entries:
+            sec = obj.sections[number - 1]
+            data = orig_runtime.trimmed(sec)
+            if following is not None and following - address >= len(data):
+                data += b"\xcc" * (following - address - len(data))
+            rewriter.data[number] = data
+            if not first:
+                rewriter.set_flags(number, rewriter.flags(number) & ~ALIGN_MASK | ALIGN_1)
+            index = section_symbol(obj, number)
+            if index is not None and rewriter.symtab[index * 18 + 17]:
+                rewriter.set_aux_length(index, len(data))
+        rewriter.write(path)
 
 
 def defer_loose_bss(placed, members, info):
@@ -1601,6 +1743,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         placed, members, libs, info = link_runtime(placed, objects, original, (text_va, game_end + 1),
                                                    runtime, flags)
     bindings, data_relocs, split, constants, guids, compiled = {}, [], None, [], [], []
+    thunks = []
     if info is not None:
         sources = {os.path.basename(p): p for p in objects}
         refs = game_references(original)
@@ -1630,6 +1773,8 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
             bindings.setdefault(name, address)
         split = runtime_split(info, data_va, data_size)
         defer_loose_bss(placed, members, info)
+        thunks = foreign_code(os.path.join(LAYOUT, "preliminary.map"), info, game_end, runtime,
+                              [*placed, *members])
         members = runtime_gaps(members, info, split, original)
     fills, skip = {}, 0
     for attempt in range(6):
@@ -1639,7 +1784,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         early = [filler(n, f, z)[0] for n, (f, z) in fills.items() if not f & coff.CODE]
         late = [filler(n, f, z)[0] for n, (f, z) in fills.items() if f & coff.CODE]
         with exe_options(link_order="source", ldflags=flags, libs=libs):
-            inputs = [data[0], *constants, *placed, *[p for _, p in guids], *early, *members, *data[1:], *late]
+            inputs = [data[0], *constants, *placed, *[p for _, p in guids], *early, *members, *data[1:], *late, *thunks]
             build.link_exe(inputs, customize=False)
         ours = sections(build.EXE)
         exe_map = compare_exe.read_map(build.EXE_MAP)
