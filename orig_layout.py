@@ -1230,6 +1230,34 @@ def loaded_members(lib_name, lib_path_, have, objects):
     return added
 
 
+def defer_loose_bss(placed, members, info):
+    """Moves the zero-initialized sections no original address is known
+    for (the game's unbound statics, runtime members the original lays
+    out elsewhere or lacks) to the end of .bss: in the link's order they
+    would push the runtime's and the tail's globals along."""
+    count = 0
+    for path in [*placed, *members]:
+        if not path.endswith(".obj") or not os.path.exists(path):
+            continue
+        obj = coff.Object(path)
+        runtime = path in info["objs"]
+        numbers = [number for number, sec in enumerate(obj.sections, 1)
+                   if sec.name == ".bss" and len(sec.data) and not sec.flags & (COMDAT | 0x800)
+                   and not (runtime and (path, number) in info["bases"])
+                   and os.path.basename(path)[:4] not in ("000_", "zzy_", "zzx_")]
+        if not numbers:
+            continue
+        rewriter = Rewriter(path)
+        for number in numbers:
+            rewriter.set_name(number, ".bss$zz")
+        rewriter.write(path)
+        if runtime:
+            info["objs"][path] = coff.Object(path)
+        count += len(numbers)
+    if count:
+        print(f"moved {count} zero-initialized sections of unknown address to the end")
+
+
 def alignment(flags):
     shift = (flags & ALIGN_MASK) >> 20
     return 1 << (shift - 1) if shift else 16
@@ -1565,6 +1593,7 @@ def link(objects, *, initial_data="original", ldflags=(), extra_rows=(), runtime
         for name, address in info["commons"].items():
             bindings.setdefault(name, address)
         split = runtime_split(info, data_va, data_size)
+        defer_loose_bss(placed, members, info)
         members = runtime_gaps(members, info, split, original)
     fills, skip = {}, 0
     for attempt in range(6):
