@@ -245,6 +245,16 @@ through more blocks unused); at equal priority, define X first.
 `c2oracle.py SRC NAME --global` prints the numbers, `--raw` every block's
 contribution, so check the gap before editing.
 
+A local copied from a global (`item = lara_item;`) can be lowered by
+reading the global instead of the copy in one block. The block's loads
+then count for a separate range of the global (it gets the same register,
+so the code there is unchanged), and the copy loses that block's
+`m * N * w`. Checked in LaraWaterCurrent: with
+`mGetAngle(x, z, lara_item->pos.x_pos, lara_item->pos.z_pos)` in the
+current branch, item fell from 185 to 112, below that branch's y (180)
+and camera offset temp (150). Those two then took esi and edi, and item
+took ebx as retail does; one edit changed every register in the function.
+
 ### Rule C1: repeated literals become candidates, not necessarily registers
 
 The setup at 0x1071732f calls the machine-tuple walker 0x1071a8a6.
