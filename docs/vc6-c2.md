@@ -2,7 +2,9 @@
 
 Visual C++ 6.0 SP3, cl 12.00.8168: c2.dll loads at its image base
 0x10700000 (nothing else claims it under wine), so the addresses below
-hold in every run. `c2oracle.py` puts breakpoints on them; this file is
+hold in every run. They are 8168's; tr04's original was compiled by a
+later c2.dll, build 12.00.8447, whose code addresses differ (see "Build
+12.00.8447" for the table and what changed). `c2oracle.py` puts breakpoints on them; this file is
 the model behind its output. Nothing here is copied compiler code: these
 are the rules, with the address where each one lives so the next person
 can check them.
@@ -28,6 +30,149 @@ breakpoints. Build the stand-in with `cl /nologo /O2 /LD c2stub.c`
 (c2oracle.py does it into build/c2oracle/ the first time). A run takes
 about 3 s for a small file and 10 s for control.c; --raw on a big
 function takes minutes.
+
+## Build 12.00.8447
+
+tr04's original carries Rich `@comp.id` build 8447, and c2.dll writes
+that from its own build (8168: `or edi,0x1fe8` at 0x10758d44; 8447:
+`or edi,0x20ff` at 0x10768c20), so the original was compiled by a
+c2.dll 12.00.8447, a later VC6 SP3 back end (timestamp 1999-03-23, its
+own Rich header says it was built by 8447 too). Both DLLs are 737329
+bytes; every section has the same size and address except .text, which
+grew by 0x1b8 (.rdata's strings moved within it).
+c2oracle.py reads the build from the version resource
+(`VS_FIXEDFILEINFO`, dwFileVersionLS >> 16) and c2gdb.py picks the
+address set for it. `C2ORACLE_DLL=c2_8168.dll c2oracle.py ...` traces
+the other DLL from the bin directory, for comparing the two.
+
+The linker laid the functions out in another order, but every global,
+the register table, the structures and the .databe/.bssbe layout are
+where 8168 has them, so only code addresses move. Every 8168 address in
+this file has an 8447 twin whose surrounding instructions are identical
+but for relocated addresses (matched by unique 6-instruction n-grams
+extended to whole runs, then a diff of the gaps):
+
+| 8168 | 8447 | used for |
+|---|---|---|
+| 0x107025f1 | 0x10702e99 | P3 memory dependence test |
+| 0x1070390f | 0x1070341f | P3 |
+| 0x10703a4e | 0x1070355e | P3 points-to lookup |
+| 0x10709383 | 0x1070d0c8 | S2 key copy |
+| 0x107093d0 | 0x1070d115 | S2 key copy end |
+| 0x10709451 | 0x1070d196 | S1 after the sort |
+| 0x107094b4 | 0x1070d1f9 | S1 count |
+| 0x10709518 | 0x1070d25d | S2 operand hash |
+| 0x10709584 | 0x1070d2c9 |  |
+| 0x107095be | 0x1070d303 |  |
+| 0x107095cc | 0x1070d311 |  |
+| 0x107095e7 | 0x1070d32c |  |
+| 0x107095f9 | 0x1070d33e |  |
+| 0x1070961e | 0x1070d363 |  |
+| 0x10709620 | 0x1070d365 |  |
+| 0x1070964e | 0x1070d393 |  |
+| 0x10709687 | 0x1070d3cc |  |
+| 0x1070968a | 0x1070d3cf |  |
+| 0x10711a0f | 0x1072127e | C1 literal restore |
+| 0x10714414 | 0x1072255a | G1 per block |
+| 0x10714c06 | 0x10722d4c | G1 referenced |
+| 0x10714c2e | 0x10722d74 | G1 referenced |
+| 0x10714c53 | 0x10722d99 | G1 live through |
+| 0x10715922 | 0x1072371a | G1 work list sort |
+| 0x107159af | 0x107237a7 | G1 color one range |
+| 0x10716715 | 0x107245c3 | G1 commit |
+| 0x107169c9 | 0x10724877 | G1 commit |
+| 0x1071732f | 0x1072cac2 | C1 setup |
+| 0x1071a8a6 | 0x1072abbf | C1 tuple walker |
+| 0x1071aadd | 0x1072adf6 | C1 literal check |
+| 0x1071b22d | 0x1072b546 | C1 repeated-value test |
+| 0x1071c2c0 | 0x1072c600 | C1 eligibility |
+| 0x1071c38e | 0x1072c6ce | C1 intern |
+| 0x1071c446 | 0x1072c786 | C1 reuse bit |
+| 0x1071c523 | 0x1072c863 | C1 new symbol |
+| 0x107207e6 | 0x1072d5c5 | G1 round start |
+| 0x107207f5 | 0x1072d5d4 | R1 split range call |
+| 0x10720874 | 0x1072d653 | G1 skipped range |
+| 0x10720888 | 0x1072d667 | G1 loop |
+| 0x1072090a | 0x1072d6e9 | G1 split flag |
+| 0x10720930 | 0x1072d70f | G1 register known |
+| 0x10723b3e | 0x1073e8f6 | R1 piece boundaries |
+| 0x10723c73 | 0x1073ea2b | R1 |
+| 0x10724868 | 0x1073f5d8 | R1 makes the tuples |
+| 0x1073362d | 0x10731a59 | L1 rotation reset |
+| 0x10734e4b | 0x10733273 | L1 picker |
+| 0x10734f18 | 0x10733340 | L1 round robin |
+| 0x10734fc7 | 0x107333ef | L1 preferred |
+| 0x10735061 | 0x10733489 | L1 evicted |
+| 0x1073513b | 0x10733563 | L1 first free |
+| 0x10735143 | 0x1073356b | L1 commit |
+| 0x10739fad | 0x1073ad9b | scheduler driver |
+| 0x1073a0aa | 0x1073ae98 | region done |
+| 0x1073a818 | 0x1073b3a2 | build the DAG |
+| 0x1073ada2 | 0x10738546 | P3 memory edges |
+| 0x1073b689 | 0x10738c53 | P1 priorities |
+| 0x1073b6bf | 0x10738c89 | P1 height |
+| 0x1073b78b | 0x10738d55 | P1 shifts |
+| 0x1073bf95 | 0x1073955f | schedule |
+| 0x1073c05e | 0x10739628 | cycle count returned |
+| 0x1073c0b2 | 0x1073967c | P2 ready list insertion |
+| 0x1073c17b | 0x10739745 | P2 cycle picker |
+| 0x1073c4ad | 0x10739a77 | P2 check |
+| 0x1073c505 | 0x10739acf | P2 register check |
+| 0x10792e3b | 0x10792ff6 | S2 defining tree |
+
+What differs in the code. The asserts (`mov edx, line` /
+`mov ecx, "E:\8447\vc98\p2\src\..."`) say which sources moved:
+P2\color.c -23 lines before line 840, P2\fg.c +30 before 5660,
+P2\globlopt.c +3 between 3346 and 3972, P2\emit.c +2 between 782 and
+829, P2\x86\schedmd.c -8 before 1836; the other 43 files with asserts
+keep their line numbers. The coloring routine, the priority computation, the local
+picker, the operand hash and the scheduler's DAG, priority and picker
+routines are instruction-for-instruction the same in both builds apart
+from those line constants, so G1, C1, L1, S1, S2, P1, P2, P3 and R1 hold
+unchanged under 8447. The local allocator's start (0x107335c3, 8447
+0x107319ef) and nine other loops over static tables now end on
+`jb`/`ja` instead of `jl`/`jg` (presumably an unsigned type in c2's own
+source; no effect on what c2 decides). The per-node expression simplifier (8168
+0x10707d5c, 8447 0x1070ba8d, ecx = the node) gained a type-class test
+(`[node+0xa] & 0xf000 == 0x1000`, 8447 0x1070be72) on one of its paths.
+
+Checked: oracle traces of InitialiseBat (all options) and TestTriggers
+(--global --regs --sched --sort, 2111 lines) are identical under both
+builds but for heap addresses. Recompiling tr04 with 8447 changed only
+DoUwEffect, through rule B1.
+
+### Rule B1 (8447 only): a masked sum drops its addend's mask
+
+Both builds rewrite `(x >> n) << m`, n > m, as `(x >> (n - m)) & mask`.
+When that is an addend of a sum masked again, 8447 widens the inner
+mask by every bit the outer mask clears and the other addend is known
+to have clear (so no carry can come out of them); a mask that becomes
+-1 is dropped (the simplifier's trace shows `and(..., -1)`). 8168 keeps
+the inner mask as it is:
+
+```c
+int f(unsigned char *p, int o) { return ((o & ~3) + ((*p >> 6) << 2)) & ~3; }
+/* 8168: shr eax,4; and al,0xfc; add eax,edx; and al,0xfc
+   8447: shr eax,4; add eax,edx; and al,0xfc */
+```
+
+With `& ~1` outside, 8447's inner mask is 0xfd (bit 0 freed, bit 1
+still needed); with `(o & ~7)` as the other addend it is dropped too;
+with a plain `o` (low bits unknown), a `^` instead of the `+`, or no
+outer mask, both builds compile the same.
+
+A bitfield `+=` is exactly that shape. `p->y += p->yvel >> 6`, with
+`sint32 y : 30` at bit 2, is `old ^ ((t ^ old) & ~3)` with
+t = (old & ~3) + (yvel >> 4 & ~3) in 8168, which simplifies to
+`t ^ (old & 3)`. In 8447 t = (old & ~3) + (yvel >> 4), whose low bits
+are not zero, so the merge stays `t ^ ((yvel >> 4 ^ old) & 3)`: one
+`and` fewer, one `xor` more, and the trees, the temps after them and
+their live ranges differ from the first loop on (DoUwEffect: temp
+indices shift by 2 to 5, two extra ranges get eax and ecx, p->x is no
+longer kept in ebp). `-=`, `|=`, a plain addend (`p->y += p->yvel`) and
+`(unsigned)i >> 6` (which becomes `lea [base+x*4]`) compile the same in
+both builds; `>> 6` of an unsigned char, signed char, unsigned short or
+int as a `+=` addend all change. Retail DoUwEffect has the 8447 form.
 
 ## Globals
 
@@ -303,14 +448,30 @@ and ControlTwoBlockPlatform are red because retail's loads rose there
 although item = &items[item_number]: with the edge removed the
 scheduler reproduces retail's order exactly (room load, z load, lea,
 store, y load, push), so retail's z load had a tag without room_number.
-What source gives an items-derived pointer such a tag is open: hoisting
-the store, a comma expression, and declaring another address-taken
-local did not.
+Hoisting the store, a comma expression, and declaring another
+address-taken local did not give it such a tag. Declaring room_number
+in the block that uses it, below the `item = &items[...]` assignment,
+did (both match that way now). In micro tests the tag behaves as if it
+recorded the address-taken locals in scope where the pointer is
+assigned (--sched --raw prints it as `[tag.set:base+off]`):
+
+    item = &items[n] at function level, room_number declared there too:
+        item->x, ->y, ->z loads tag 10.4; the store has 0x20 edges to them
+    item = &items[n] at function level, room_number in an inner block:
+        loads tag 10.3; no edge, the loads rise above the store
+    both inside the inner block:
+        loads tag 10.4 again; the edges are back
+
+A load can still stay behind the store for a register reason: when the
+stored value's register is the load's destination, the anti dependence
+(kind 2) orders them whatever the tag.
 
 ControlBirdBlade is the converse: retail kept `mov dword [esi+0x34],0`
 (`*(sint32 *)&item->item_flags[0] = 0`) behind the frame_number store,
-ours pairs it with the load before (the stores have different tags, so
-no edge). Five spellings of the cast store changed nothing.
+ours paired it with the load before (the stores have different tags, so
+no edge). Five spellings of the cast store changed nothing; a volatile
+store to frame_number (`*(volatile sint16 *)&item->frame_number = ...`)
+keeps the order and matches.
 
 ## Rule R1: where split ranges get their loads and stores
 
