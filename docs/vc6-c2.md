@@ -276,6 +276,23 @@ stream, counting it in a particular block, and assigning it a register
 are separate decisions. Do not infer the timing of if-conversion just
 from an absent constant in `--global`.
 
+### Rule G2: a variable assigned in two steps is two ranges
+
+Each definition of a variable starts its own live range (web), so
+`c = x >> 5; c = 255 - c;` gives c two ranges where
+`c = 255 - (x >> 5)` gives one, and the intermediate value, a local
+scratch before, now goes through G1. The second range starts at its
+first instruction (`mov reg,255`) while the first is still live, so the
+two conflict and cannot share a register. Both count as ranges in the
+block, which also raises every range's N there.
+
+Checked in ProcessMeshData's prelit loop (`sint16 c`, RGBONLY(c, c, c)
+into prelight[j]): the one-step form gave c eax (224), its sign
+extension eax, j ecx, and the shifted load a scratch edx. The two-step
+form gave the shifted value eax (256, colored first by position), c
+ecx, the sign extension eax and j edx, which is retail. The scratch
+picks after the loop moved with it (rule L1).
+
 ## Rule L1: scratch registers for what the global allocator left
 
 Picker 0x10734e4b (ecx = tuple, edx = its use), commit 0x10735143
@@ -303,6 +320,23 @@ eax instead of ecx, and the later allocations rotated accordingly.
 Paired `--regs --raw` traces agreed through the preceding 90 allocation
 events and identified this missing event directly. Thus identical bytes
 at an edited expression do not prove unchanged allocator state.
+
+### Rule L2: a shared tail is generated once, then duplicated
+
+A statement after an if/else, such as `Unlock(vb);` after both arms,
+can come out duplicated at the end of each arm, each copy jumping to the
+join. Its code is generated once, after the last arm in code generation
+order, and copied afterwards: both copies carry the same scratch
+registers, and the round robin pointer entering them is where the last
+arm left it. Writing the call in each arm instead makes two blocks
+generated in turn: the first copy follows the first arm, and the second
+arm then starts from where that copy left the pointer.
+
+Checked in ProcessMeshData (`if (nNorms > 0) {normals} else {prelit}`
+then Unlock): with the call in each arm, the first copy's vtable load
+took ecx and the prelit arm's first scratch edx; with one shared call,
+the prelit arm's first scratch took eax and both copies took the
+register after the prelit loop's last pick. Retail has the shared form.
 
 ## Rule S1: commutative operand order and compares
 
