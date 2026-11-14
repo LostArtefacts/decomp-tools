@@ -1016,6 +1016,7 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
         if path is None:
             raise ValueError(f"the runtime library {name} is not on the library path")
         paths += orig_runtime.extract(map_path, name, path)
+        paths += loaded_members(name, path, paths, objects)
     text = original.read(text_va, text_size)
     runtime_range = (code_range[1], text_va + text_size)
     known = {}
@@ -1190,6 +1191,45 @@ def link_runtime(placed, objects, original, code_range, runtime, flags):
     return placed, members, libs, info
 
 
+def loaded_members(lib_name, lib_path_, have, objects):
+    """Extracts the members of the library the link loads that its map
+    does not show: members whose code /OPT:REF drops, but whose data
+    stays (like setlocal's). Returns their paths."""
+    defined, undefined = set(), set()
+    for path in [*objects, *have]:
+        for sym in coff.Object(path).externals():
+            (defined if sym.section > 0 or sym.value else undefined).add(sym.name)
+    available = {}
+    for name, data in orig_runtime.members(lib_path_):
+        if data[:2] != b"\x4c\x01":
+            continue
+        scratch = os.path.join(LAYOUT, "member.obj")
+        with open(scratch, "wb") as f:
+            f.write(data)
+        externals = coff.Object(scratch).externals()
+        defs = {y.name for y in externals if y.section > 0 or y.value}
+        available.setdefault(name, (data, defs, {y.name for y in externals if y.section == 0 and not y.value}))
+    stem = os.path.splitext(os.path.basename(lib_name))[0].lower()
+    taken = {os.path.basename(p).split("~", 1)[-1] for p in have if os.path.basename(p).startswith(stem + "~")}
+    added = []
+    while True:
+        missing = undefined - defined
+        name = next((n for n, (_, defs, _) in available.items() if n not in taken and defs & missing), None)
+        if name is None:
+            break
+        data, defs, refs = available[name]
+        taken.add(name)
+        defined |= defs
+        undefined |= refs
+        out = os.path.join(orig_runtime.RUNTIME, f"{stem}~{name}")
+        with open(out, "wb") as f:
+            f.write(data)
+        added.append(out)
+    if added:
+        print(f"{lib_name}: {len(added)} members the map does not show")
+    return added
+
+
 def alignment(flags):
     shift = (flags & ALIGN_MASK) >> 20
     return 1 << (shift - 1) if shift else 16
@@ -1212,13 +1252,16 @@ def runtime_gaps(members, info, split, original):
             cursor = cursors[sec.name]
             at = cursor + (-cursor % align)
             base = info["bases"].get((path, number))
+            if base is None and sec.flags & COMDAT:
+                continue  # unreferenced, /OPT:REF drops it
             # The linker can align a section further than its flags ask
             # (to 16): only a larger gap is something else.
             if base is not None and base > cursor + (-cursor % 16):
                 flags = (DATA_FLAGS if sec.name == ".data" else BSS_FLAGS) & ~ALIGN_MASK | ALIGN_1
                 filler_path = os.path.join(PLACED, f"zzx_gap{count}.obj")
                 filler = original.read(cursor, base - cursor) if sec.name == ".data" else bytes(base - cursor)
-                coff.write_object(filler_path, [(sec.name, flags, filler, [])], {}, [], {})
+                coff.write_object(filler_path, [(sec.name, flags, filler, [])],
+                                  {f"_layout_gap{count}": (1, 0)}, [], {})
                 out.append(filler_path)
                 print(f"gap of {base - cursor:#x} before {path} section {number} at {base:#x}")
                 count += 1
