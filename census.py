@@ -214,7 +214,7 @@ def main() -> None:
     ]
     with (output / "census.csv").open("w", newline="") as stream:
         writer: csv.DictWriter[str] = csv.DictWriter(
-            stream, fieldnames=columns, extrasaction="ignore"
+            stream, fieldnames=columns, extrasaction="ignore", lineterminator="\n"
         )
         writer.writeheader()
         writer.writerows(rows)
