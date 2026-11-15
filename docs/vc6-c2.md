@@ -652,6 +652,32 @@ cycle and returns how many at 0x1073c05e; the chosen DAG nodes are at
   (prologue), 0xc1 imul. Edge kinds as far as seen: 1 true, 2 anti,
   4 output (registers), 0x20 memory.
 
+### Rule P0: scheduling windows stop after 81 tuple nodes
+
+The region scanner for build 8447 is 0x1073825e. Its ordinary linked-tuple
+walk increments a counter and stops when that counter is greater than
+0x50 (comparison at 0x10738270), returning the preceding tuple. Thus a
+plain run is cut into windows of at most 81 tuple nodes; control/marker
+boundaries can end a window earlier. A printed "scheduled block" is a
+scheduling region, not necessarily an entire source or control-flow block.
+Instructions in separate regions cannot compete in the same ready list.
+
+AddQuadClippedZBuffer provides a controlled case. Its normal object differs
+from retail only in the third vertex's `sx` load: retail loads before the
+preceding pointer increment and stack store, while ours loads afterwards.
+The normal scheduler trace places that increment/store at positions 80/81
+of one region and the load at position 1 of the next. A private diagnostic
+copy of c2.dll, changing only the count immediate from 0x50 to 0x51, emits
+all 1,393 retail bytes exactly, without masks or referenced-data differences.
+The unmodified oracle object was first checked against the normal object
+and is identical. This identifies a window-boundary mechanism; it does not
+establish a missing alias edge. The diagnostic compiler also loses three
+previously matching sibling functions and is not a source recovery or a
+compiler configuration to retain. A genuine source repair must change the
+relevant tuple placement under the original compiler. Evidence is retained
+in tr04's `build/scope-recovery-plan/` (baseline and intervention objects,
+scheduler traces, disassembly, hashes, and whole-TU result delta).
+
 ### Rule P1: priority
 
     height(n)   = 1 + max over successors s of (height(s) + latency(n -> s))   (0x1073b6bf)
