@@ -520,6 +520,39 @@ form gave the shifted value eax (256, colored first by position), c
 ecx, the sign extension eax and j edx, which is retail. The scratch
 picks after the loop moved with it (rule L1).
 
+### Rule C4: a narrow bitwise operand can remove a wider CSE range
+
+GetTrackWord returns signed16. Its sign-extension path originally used
+`return (sint16)(~((1 << packmethod) - 1) | ret);`. Narrowing the complement
+before the OR, while retaining the outer return cast, recovers all 107
+retail bytes under the normal compiler:
+
+```c
+return (sint16)((sint16)~((1 << packmethod) - 1) | ret);
+```
+
+Both forms have the same low16 result. This does not change the API or the
+width of ret. Signed/unsigned16 casts immediately before or after the
+complement all match; narrowing only ret is byte-flat. An explicit outer
+cast avoids introducing a return-conversion warning.
+
+Paired global/range oracle runs reproduce the baseline and recovered
+whole-TU object comparisons exactly. In the baseline the shared mask has
+range temp@219, priority28, position26, three references and weighted count6,
+assigned ebp. That range disappears in the recovered source and the mask is
+recomputed on the sign-extension path, as in retail. The p range moves from
+edx to eax; offset remains esi, packmethod remains edi and ret remains edx.
+Their backend slots (5, 4, 1 and 6 respectively) are unchanged. Literal1's
+pruning counter rises from2 to3. This is a typed-expression/liveness effect,
+not an include-induced symbol-address bucket shift. Evidence is in tr04's
+`build/track-return-narrowing/`, including both oracle traces and objects.
+
+The low-bit argument applies through bitwise ~, &, | and ^ toward an
+already narrow consumer. It does not justify moving a cast through a
+comparison, logical operation, right shift, division or floating arithmetic.
+Arithmetic also needs an independent overflow/range proof. Type a real
+consumed value; do not add an unused width alias to perturb compilation.
+
 ## Rule L1: scratch registers for what the global allocator left
 
 Picker 0x10734e4b (ecx = tuple, edx = its use), commit 0x10735143
