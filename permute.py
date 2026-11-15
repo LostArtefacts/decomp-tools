@@ -1156,6 +1156,8 @@ def main():
     ap.add_argument("-s", type=int, default=None)
     ap.add_argument("--decls", action="store_true", help="search declaration orders exhaustively")
     ap.add_argument("--limit", type=int, default=3000, help="--decls: most candidates to try")
+    ap.add_argument("--fitness", choices=("raw", "relocations"), default="raw",
+                    help="opt-in COFF literal/instruction ranking (PE; requires Capstone)")
     ap.add_argument("--start", help="a variant to search from, such as an earlier run's best")
     ap.add_argument("--sweep", action="store_true",
                     help="enumerate the neighbourhoods of the diff's lines, beam search, until nothing helps")
@@ -1168,6 +1170,8 @@ def main():
     ap.add_argument("--file", action="store_true",
                     help="also reorder the file's top-level declarations, keeping its other functions matching")
     args = ap.parse_args()
+    if args.fitness == "relocations" and (LE or args.pad or args.plan):
+        ap.error("--fitness relocations requires PE and cannot be used with --pad or --plan")
     FILE_MODE[0] = args.file or args.pad
     if LE:
         import lefn
@@ -1182,6 +1186,9 @@ def main():
         plan(src, text, args.limit if args.limit != 3000 else 64, args.j)
         return 0
     s = (lefn.Scorer if LE else Scorer)(args.name, src, text, start, end)
+    if args.fitness == "relocations":
+        from relocation_fitness import RelocationScorer
+        s = RelocationScorer(s)
     base = s.variant(text[start:end])
     FILE_MODE[1] = (base[0], base[2])
     first = s.score(base)

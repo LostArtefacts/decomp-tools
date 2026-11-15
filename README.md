@@ -413,6 +413,47 @@ subject. `git commit --no-verify` skips the hooks.
 - `exe_resources(feats)`: the executable whose resources the standalone
   exe gets, instead of the original's
 
+## Opt-in relocation fitness
+
+`python tools/permute.py NAME --fitness relocations -j 8 -t 120`
+uses Capstone and the actual COFF relocation targets to rank source variants.
+The default `--fitness raw` keeps the existing scoring behavior. Install the
+optional dependency with `python -m pip install capstone` for this mode.
+
+The ranking compares instruction mnemonics, operand kinds and sizes, registers,
+and memory addressing. Unresolved read-only scalar references use their COFF
+bytes and the original PE's literal bytes, including MSVC's `__real@4@...` and
+`__real@8@...` symbols. `$SG` strings use their terminated contents. Known
+symbols and addresses inside their declared extents retain address identity,
+including globals with equal stored values. Unknown externals and complex
+objects remain opaque. Local branch destinations use block identities so
+inserting an instruction inside a block does not change every branch token.
+Candidate code is decoded with its actual known relocations resolved and
+unknown addends intact; original instruction bytes are never pasted into it.
+
+Instruction distance is primary; actual encoding distance breaks ties. A
+nonmatching score prints `(retention failures, instruction distance, encoding
+distance)`. It stays truthy and unequal to zero even when both distances are
+zero. Only the existing `compare.results` exact result for every target symbol,
+with the original matching functions retained and no increased relocation
+masking or data failures, returns integer zero. This is ranking guidance;
+comparison acceptance and literal-data validation are unchanged.
+
+`--pad`, `--plan`, and LE are rejected with this mode because their score
+arithmetic has different assumptions. Positional `/Zd` hot-line selection is
+disabled, so `--sweep` searches all lines. Other diagnostic disassembly still
+uses its existing positional relocation display and can show misleading
+addresses when instructions move; that display is not used by this ranking.
+Each decode creates its own Capstone handle for parallel search. Undecoded
+trailing bytes remain explicit tokens; the ranker does not silently discard
+code that Capstone cannot decode.
+
+`relocation_fitness.Fitness.rank(object_path, comparison_result)` exposes the
+separate ranking API; `RelocationScorer(existing_scorer)` adapts it to the
+permuter's comparisons. Score the baseline once before launching parallel
+candidates, as the permuter does. Run the focused raw-COFF and adapter fixtures
+with `python -m unittest discover -s tools/tests -v`.
+
 ## Requirements
 
 - Python 3.11 or later (for `tomllib`), [just](https://github.com/casey/just)
