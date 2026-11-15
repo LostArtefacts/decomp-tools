@@ -350,8 +350,8 @@ camera_flags alias moves flags/trigger backend slots from 0x17/0x1b to
 unchanged. Reusing trigger for the earlier quad calculation also leaves
 IDs 48/55, despite that real source use and slots moving to 0x16/0x1a.
 Thus an earlier source use or changed backend slot does not establish an
-earlier surviving named range. The preceding representative/temporary
-canonicalization mechanism has not been reversed in these experiments.
+earlier surviving named range. The preceding named-definition substitution and width-alias selection
+are described in rule C3 below; neither follows lexical first use alone.
 
 A used early alias can also change more than birth order. Keeping the
 initial flags word in trigger across RefreshCamera, then copying to flags,
@@ -379,6 +379,96 @@ order must affect instructions in a common materialized region and survive
 scheduling. This is not a general condition for header effects: numeric IDs
 can also participate in other allocator tie decisions and change coloring.
 Inspect the first actual divergence rather than infer a byte change from IDs.
+
+### Rule C3: a source local can disappear before its wider representative is born
+
+For build 8447, three different identities must be kept apart: the original
+frontend symbol, the backend symbol first bound to it, and the later backend
+storage representative scanned by C2. Lazy binding at 0x10714aec checks the
+frontend record's +8 cache. The creation path at 0x10714b37..0x10714b68
+allocates a backend record, writes `frontend+8 = backend`, stores the raw
+frontend pointer at `backend+0`, and makes `backend+8 = backend`.
+
+The storage-view helper 0x107037fc can later create a differently typed
+alias. At 0x10703a5c..0x10703a8b a larger zero-offset representative takes
+the original frontend pointer, clears it from the old record, updates the
+frontend cache, and redirects the old sibling records' +8 pointers. Thus
+`symbol()`'s displayed name, which follows `backend+8` before reading the
+frontend pointer, can hide the distinction between original and canonical
+records. Preserve raw pointers, type, slot and canonical +8 when tracing it.
+This is C2 work, not evidence of an already canonicalized frontend record.
+
+Measured in TestTriggers: flags first binds as slot0xb/type0x1002 and
+trigger as slot0x11/type0x1002. Their live representatives are new
+slot0x17/type0x1004 and slot0x1b/type0x1004 records. The original short
+records have no live-range web at the later named allocation scan. Flags'
+initial copy is widened through tuple helper0x10730bcc, operand retyping
+0x10730af7 and storage-view helper0x107037fc. Trigger's loop use reaches
+the same retyping/storage helper through extension rewrite0x1074c320.
+The type codes here mean signed2-byte and signed4-byte integers.
+
+Width optimization0x107262d7 visits the linked block list. For each block,
+0x10726343 repeats a forward tuple walk0x1072637d followed by a backward
+walk0x1072671b until stable. The latter follows tuple+0xc links. This
+explains flags being promoted before type within their common header block,
+even though type's C definition and initial backend binding precede flags.
+It is not one forward lexical walk over source locals.
+
+An earlier local role can disappear before width optimization. In the
+controlled version reusing trigger for CLIMB's quad0..3 value, trigger
+really binds first at slot9, ahead of flags0xb. Nevertheless its early
+assignment and extension disappear in global optimizer0x10713615,
+subpass0x10711703, before0x107262d7. The observed forward-substitution
+path0x10712343..0x1071239d moves the defining tuple next to its use
+(0x1071117e), clones its RHS (0x1070156f), replaces the use operand
+(0x107017ce), then deletes the named definition (0x1070179c). The source
+variable's early identity is therefore absent when width aliases are born.
+Baseline quad's single-use role similarly gets no initial named range.
+This does not mean that all single-use source expressions always fold.
+
+The candidate classifier marks an eligible first use by changing defining
+node byte+0x13 from0 to0xa; another eligible use makes it0xb
+(0x10711b35..0x10711b40). Work-list construction at0x10712141 requires
+0xa and byte+0x11 bit0x10. Further operand identity, type, reachability and
+safe-movement gates apply. Adjacent def/use tuples take0x107121c9..0x107121d0;
+nonadjacent ones must pass the additional0x10742a82 test. A count of C
+references alone does not establish eligibility or retained web shape.
+
+A debugger-only counterfactual skipped the one observed early-quad
+substitution and left compiler binaries/source unchanged. The early named
+definition then survived into width optimization, passed its4-byte widening
+checks, and created trigger's32-bit representative before flags. Trigger
+received initial webs48/49 and flags50; the first R1 list included the loop
+trigger49 before flags50. Their later priorities remained trigger−326 and
+flags24/−276. But a new early trigger web at priority40 changed other
+allocation: the diagnostic object was2752bytes, canonical score523, versus
+unmodified quad-control2764/433 and game baseline2764/10. It is causal
+compiler-state evidence, **not a matching source implementation**. Keeping
+an early name is only useful if the resulting web decomposition and emitted
+instructions also match; adding uses or forcing widths is not sufficient.
+
+A prospective ordinary-C control did recover the target. Keep the original
+32-bit quad calculation; before the CLIMB guard, assign `trigger = *data`,
+use trigger in both the DATA_TYPE guard and the climb-mask AND, and keep
+`*data & END_BIT` as a memory reread after the possible climb_status store.
+No intervening write or call separates the two replaced reads. This names
+the headerword already retained in AX by retail, instead of inventing a
+new quad role. A hardware watch confirms the early definition tag goes0→0xa at
+0x10711b40, then0xa→0xb at0x10711f54, excluding it from the0xa-only
+substitution work list. That path is reached after0x10711fb6..0x10711fc4
+tests the original backend slot in the current block's symbol bitset at+0x30;
+0x10711f38 then walks the pending definition list. Interpreting this bitset
+as cross-block liveness is consistent with the source/CFG control, not a
+claim that every syntactic second use hits the same gate. It survives into width optimization and gets a
+32-bit representative before flags (slots0x18/0x19, initial looptrigger49
+before flags50). The early trigger web has priority30, position58, refs3 and weighted6,
+replacing baseline temp@1307 with those same columns. All68 numerical
+G1 records and their assigned-register sequence remain identical; the later
+pair retains priorities−326 and24/−276. The resulting ordinary compiler object matches all2764
+retail bytes, canonical score0, with zero masked bytes. The state prediction
+was written before compiling/inspecting this candidate. This success
+supports tracing retained def/use structure before source edits; it does
+not make arbitrary extra uses or aliases a general matching recipe.
 
 ### Rule G2: a variable assigned in two steps is two ranges
 
