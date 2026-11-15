@@ -344,6 +344,27 @@ genuine source/include context before retention. Other passes can use
 different keys, and a uniform phase shift does not model changed header
 types, macros, prototypes or nonuniform symbol shifts.
 
+Header contents need a separate control. ScorpionControl is byte-flat
+across all 64 uniform phases, but its missing DisableBaddieAI prototype
+changes code. The baseline implicitly declares an int-returning function;
+the owning lot.h declares `void DisableBaddieAI(sint16)`. Adding just that
+declaration, adding lot.h at either tested position, and using the full
+legacy include context all produce the same actual function payload:
+SHA256 02d5fcd1e9deb130ebc086b97c9877d07ae2ac4878213d7e927500a95f7d7249.
+Local instruction distance falls from 293 to 159 and size from 2000 to
+the retail 1996 bytes, with zero masks/data failures. All other functions
+in the translation unit remain byte-identical. The function still differs
+from retail. These controls isolate a prototype effect; the later C2 pass
+responsible for its allocation changes has not been traced.
+
+A header-negative result is conditional on the tested source form.
+Earlier source bodies and different declaration contexts need independent
+starts and equal search budgets, even when their initial score is worse.
+Record raw target score separately from sibling regressions during search;
+the usual neighbor penalty can hide a useful intermediate context. A
+finite negative grid or a nominal uphill allowance with no accepted uphill
+moves does not establish absence of another source/context optimum.
+
 Out-of-sample controls on two red functions qualify this rule. In
 TestTriggers, the initial table contains 46 numeric candidates and no
 symbol-address candidates. Its free list is exhausted before flags and
