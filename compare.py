@@ -20,6 +20,8 @@ EXE = project.ORIGINAL
 
 STATIC = 3  # IMAGE_SYM_CLASS_STATIC
 LABEL = 6  # IMAGE_SYM_CLASS_LABEL
+BLOCK = 100  # IMAGE_SYM_CLASS_BLOCK (.bb, .eb)
+FUNCTION = 101  # IMAGE_SYM_CLASS_FUNCTION (.bf, .lf, .ef)
 UNINITIALIZED = 0x80  # IMAGE_SCN_CNT_UNINITIALIZED_DATA
 
 
@@ -73,11 +75,12 @@ def compiled_functions(symbols):
             if not sec.flags & coff.CODE:
                 continue  # a global defined in src/, not a function
             seen.add(key)
-            # Labels (storage class 6) are case targets inside a function;
-            # a switch's jump table starts at a static symbol after it.
+            # Labels and COFF debug records do not delimit emitted code.
+            # In particular, .lf stores a line count, not a code address.
+            # A switch's jump table starts at a static symbol after it.
             starts = sorted(s.value for s in obj.symbols
                             if s and s.section == sym.section and s.value > sym.value
-                            and s.storage != LABEL)
+                            and s.storage not in (LABEL, BLOCK, FUNCTION))
             end = starts[0] if starts else len(sec.data)
             addr = symbols[key][0]
             code = bytearray(sec.data[sym.value:end])

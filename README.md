@@ -166,6 +166,14 @@ through `GHIDRA`, `ghidra.path` or the newest match of `ghidra.search`
 (`~/opt/ghidra_*`). Without a `java` on `PATH`, a `jdk-21*`
 next to it is used.
 
+PE function comparison accepts COFF objects with debug information, including
+VC6 `/Zi` and `/Z7` output. Labels and debug scope records do not end a
+function; static jump tables and subsequent code symbols still do. In the
+[Microsoft COFF format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#storage-class),
+`.lf` holds a line count, so treating its value as an address truncates code.
+Run the boundary regression tests from a game checkout with
+`python3 -m unittest discover -s tools/tests`.
+
 ### The submodule
 
 | Recipe | Runs |
