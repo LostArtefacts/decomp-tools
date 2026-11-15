@@ -332,6 +332,18 @@ has a 64-period: other frontend-dependent passes can also change.
 candidate pruning, free/reuse events, IDs and split materialization lists
 without modifying compilation. Raw range/symbol addresses are retained.
 
+A controlled diagnostic prefix confirms how to vary that bucket phase.
+Prepend N distinct unused `extern int diagnostic_phase_N;` declarations
+before all includes in a temporary copy of larafire.c. With N = 0, 1, 5
+and 64, read-only range traces show Slist frontend IDs 0xe7c, 0xe7d,
+0xe81 and 0xebc, hence buckets 60, 61, 1 and 60. The actual FireWeapon
+objects at 0, 1 and 64 match all 739 retail bytes without masks; phase 5
+reproduces the alternate reload order. This calibrates a finite diagnostic
+scan over the 64 C1 bucket positions. A diagnostic hit needs recovery in
+genuine source/include context before retention. Other passes can use
+different keys, and a uniform phase shift does not model changed header
+types, macros, prototypes or nonuniform symbol shifts.
+
 Out-of-sample controls on two red functions qualify this rule. In
 TestTriggers, the initial table contains 46 numeric candidates and no
 symbol-address candidates. Its free list is exhausted before flags and
