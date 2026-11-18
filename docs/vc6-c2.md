@@ -945,6 +945,30 @@ around it:
   the statement structure (an early `break` arm vs a combined condition)
   decides block order and with it the allocator's state. RefreshCamera
   matched once it had TR3's case 1 shape.
+  MoveLaraPosition matched with TR3's `mptr = phd_mxptr;` local and its
+  `x`, `y`, `z`, `dist` locals for the phd_sqrt test.
+- A call inside an argument list that retail evaluates before the
+  argument pushes that precede it (here a `push ebx` of 0 after the
+  call) was a named temp: FlameControl matched with
+  `g = (GetRandomControl() & 0x1F) + 96;` above the TriggerDynamic call.
+- Equal-priority stores come out in IL order (rule P2), so a run of
+  zeroing stores follows the source order: retail's head_y, head_x,
+  torso_y, torso_x order in MovableBlockCollision was the statement
+  order, and `item->status = ITEM_ACTIVE;` went above
+  `AddActiveItem(item_number);` because retail stores before the push.
+  A second `GetFloor(..., &room)` whose room slot differs from the first
+  one's was a second address-taken local in the inner block (rule P3).
+- Struct copy vs field copies: `*vec = t;` and
+  `vec->x = t.x; vec->y = t.y; vec->z = t.z;` allocate differently; the
+  field copies let the x87 allocator keep t.x on the stack and store it
+  last, as retail D3DTransform does (one store/faddp swap left there).
+
+Not reachable from source so far: c2 /O2 reassociates `a - K - b` into
+`a + (-K - b)` and factors `K - c * x` into `(K / c - x) * c` whatever
+the spelling (parentheses, separate statements, casts to signed types);
+/Od keeps both, so it is c2, not c1. In a probe only an unsigned
+multiply (`12U * x`) kept `K - c * x` as retail has it. TestLaraVault,
+UserControl_bike and InitObjectLighting are red on exactly this.
 
 Fix the phase upstream: a cyclic register diff (eax/ecx/edx rotated by
 one through a block) usually comes from the local picker's round robin
