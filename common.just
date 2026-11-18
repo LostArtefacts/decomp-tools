@@ -80,6 +80,14 @@ probe *args: _pe _orig
 fn *args: _orig
     python3 tools/fn.py {{ args }}
 
+# Sort the functions that differ by how far apart they are (redtriage.py; default: hooks.allow_diff)
+triage *args: build _orig
+    python3 tools/redtriage.py {{ args }}
+
+# Check that no byte of a function that differs stopped matching (frontier.py; --update records)
+frontier *args: _orig
+    python3 tools/frontier.py {{ args }}
+
 # Search source variants of NAME for a byte match (-j JOBS -t SECONDS)
 permute name *args: _orig
     python3 tools/permute.py {{ name }} {{ args }}

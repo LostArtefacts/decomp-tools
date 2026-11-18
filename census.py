@@ -22,6 +22,7 @@ from typing import Any
 import build
 import coff
 import compare
+import redtriage
 import capstone
 
 CS: capstone.Cs = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
@@ -137,6 +138,7 @@ def main() -> None:
                 distance(astr, bstr) / max(1, len(a) + len(b)), 5
             ),
             "category": category,
+            "bucket": redtriage.classify(code, mask, orig, addr, data)["bucket"],
             "decoded_bytes_ours": decoded_a,
             "decoded_bytes_retail": decoded_b,
             "full_instruction_coverage": coverage_complete,
@@ -207,6 +209,7 @@ def main() -> None:
         "size_delta",
         "canonical_score",
         "category",
+        "bucket",
         "full_instruction_coverage",
         "has_x87",
         "mask_bytes",
