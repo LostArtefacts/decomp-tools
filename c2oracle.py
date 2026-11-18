@@ -36,6 +36,17 @@ usually gets wrong, and it prints them for NAME:
           block with its loop multiplier and each range's priority
           change there (referenced: + multiplier * ranges * weights;
           live through: - multiplier * ranges).
+          VC6 also shows how each register was chosen: the neighbours
+          that pushed the score of a register up (a neighbour's own
+          affinity for a register it can still get, "only R: +100*W"
+          for a neighbour left with one register), the range's own
+          affinities (copies to or from that register, subtracted),
+          then the score of each register it can get, in the order the
+          pick walks them (lowest wins, ties go to the earlier one), and
+          the pick, marked "** not first free" when the score moved it
+          off the first available register. "!!" lines mean the model in
+          docs/vc6-c2.md (rule G1) disagreed with c2; --raw lists every
+          neighbour and the score of every register.
   --ranges VC6 build 8447: live-range IDs, candidate pruning buckets,
           record reuse and round-start split materialization order. Numeric
           range IDs differ from backend symbol slots; header context can

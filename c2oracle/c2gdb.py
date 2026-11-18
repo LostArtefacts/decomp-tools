@@ -30,6 +30,7 @@ ADDR = {
         paths={0x435CF9: "round robin", 0x435DB5: "preferred", 0x435E74: "first free", 0x435E22: "evicted"},
         regtab=0x494758, regstride=0x50,
         color=0x41A985, split=0x4171C8, assigned=0x4171E2, skipped=None, round=None,
+        commit=None, scored=None, picked=None,
         block=0x40F6DE, use=(0x40F70F, 0x40F745), thru=0x40F72C, weight_reg="edx",
         inline=True, x87=True, sched=None,
         sched_pass=0x49321C, sched_nodes=0x4930B0, sched_took=0x4316CA, sched_region=0x40DA6A,
@@ -42,6 +43,7 @@ ADDR = {
         paths={0x10734F18: "round robin", 0x10734FC7: "preferred", 0x1073513B: "first free", 0x10735061: "evicted"},
         regtab=0x107AC730, regstride=0x54,
         color=0x107159AF, split=0x1072090A, assigned=0x10720930, skipped=0x10720874, round=0x107207E6,
+        commit=0x10716715, scored=0x10716771, picked=0x1071689A,
         block=0x10714414, use=(0x10714C06, 0x10714C2E), thru=0x10714C53, weight_reg="esi",
         inline=False, x87=False, sched=True,
         sched_pass=0x1079F270, sched_nodes=0x1079F248, sched_took=0x1073C05E, sched_region=0x1073A0AA,
@@ -60,6 +62,7 @@ ADDR["vc6-8447"] = dict(
     picker=0x10733273, assign=0x1073356B, rot_reset=0x10731A63,
     paths={0x10733340: "round robin", 0x107333EF: "preferred", 0x10733563: "first free", 0x10733489: "evicted"},
     color=0x107237A7, split=0x1072D6E9, assigned=0x1072D70F, skipped=0x1072D653, round=0x1072D5C5,
+    commit=0x107245C3, scored=0x1072461F, picked=0x10724748,
     block=0x1072255A, use=(0x10722D4C, 0x10722D74), thru=0x10722D99,
     sched_took=0x10739628, sched_region=0x1073AE98,
     pick_pipe=0x107397B2, pick_hook=0x107397C5, pick_regs=0x107397ED, pick_late=0x1073980F, pick_take=0x1073981F,
@@ -346,6 +349,9 @@ GREGS = {1: "eax", 2: "ecx", 3: "edx", 4: "ebx", 5: "esp", 6: "ebp", 7: "esi", 8
 def range_name(rng):
     try:
         sym = rd(rng)
+        if sym and C2 == "vc6" and rd(sym + 4, 1) == 13:
+            # VC6: a repeated literal made a register candidate (rule C1)
+            return "literal{%s}" % describe(rd(sym + 0x28), 1)
         return symbol(sym) if sym else "?"
     except gdb.error:
         return "range@%x" % rng
@@ -407,6 +413,132 @@ def glob_skip():
     # VC6 0x10720874: a range with weighted references <= 0 stays in memory
     rng = reg("esi")
     out("%-24s skipped (weighted %d, priority %d)" % (range_name(rng), sx32(rd(rng + 0x3C)), sx32(rd(rng + 0xC))))
+
+
+# VC6's register choice (the commit routine, 0x107245c3 in 8447,
+# 0x10716715 in 8168; ecx = the range, edx = its register class, [esp+4]
+# = the IDs of its interfering ranges not yet colored). It zeroes
+# score[0..8] at 0x1079d868, then for each neighbour n with weighted
+# references W = n+0x3c > 0 adds n's affinity weight for each register r
+# still in n's available set (n+0x20), and 100 * W when that set is just
+# {r}; then subtracts the range's own affinities (+0x34: next, register
+# descriptor (+0x1c number), weight). The pick walks the class's register
+# list (0x107a0a14[class]: eax ecx edx esi edi ebx ebp for class 0) and
+# takes an available register only on a strictly lower score, so ties go
+# to the earlier one. See docs/vc6-c2.md, rule G1.
+SCORE = 0x1079D868
+RANGE_IDS = 0x1079D88C  # range ID & 0x3ff -> chain of ranges through +0x2c
+CLASSES = 0x107A0A14
+COMMIT = {}
+
+
+def bitset(setp):
+    """Members of a c2 bit set: [setp] -> chain of {base, next, mask}."""
+    res = []
+    node = rd(setp) if setp else 0
+    while node and len(res) < 4096:
+        base, mask = rd(node), rd(node + 8)
+        res.extend(base + b for b in range(32) if mask >> b & 1)
+        node = rd(node + 4)
+    return res
+
+
+def range_by_id(i):
+    rng = rd(RANGE_IDS + 4 * (i & 0x3FF))
+    while rng and rd(rng + 0x1C) != i:
+        rng = rd(rng + 0x2C)
+    return rng
+
+
+def affinities(rng):
+    """A range's register affinities: (register number, weight)."""
+    res = []
+    p = rd(rng + 0x34)
+    while p and len(res) < 16:
+        res.append((rd(rd(p + 4) + 0x1C), sx32(rd(p + 8))))
+        p = rd(p)
+    return res
+
+
+def class_regs(cls):
+    regs, p = [], rd(CLASSES + 4 * cls)
+    while rd(p) and len(regs) < 8:
+        regs.append(rd(p))
+        p += 4
+    return regs
+
+
+def commit_entry():
+    rng = reg("ecx")
+    expect = [0] * 9
+    lines = []
+    for i in bitset(rd(reg("esp") + 4)):
+        n = range_by_id(i)
+        if not n:
+            lines.append("      neighbour id %d: not found" % i)
+            continue
+        w = sx32(rd(n + 0x3C))
+        avail = bitset(rd(n + 0x20))
+        parts = []
+        if w > 0:
+            for r, wt in affinities(n):
+                if r in avail:
+                    expect[r] += wt
+                    parts.append("wants %s %+d" % (GREGS.get(r, r), wt))
+            if len(avail) == 1:
+                expect[avail[0]] += 100 * w
+                parts.append("only %s: +100*%d" % (GREGS.get(avail[0], avail[0]), w))
+        if parts or RAW:
+            lines.append("      neighbour %s (weighted %d, available %s): %s" % (
+                range_name(n), w, " ".join(GREGS.get(r, str(r)) for r in avail) or "none",
+                ", ".join(parts) or "nothing"))
+    own = affinities(rng)
+    for r, wt in own:
+        expect[r] -= wt
+    COMMIT.clear()
+    COMMIT.update(rng=rng, cls=reg("edx"), expect=expect, lines=lines, own=own)
+
+
+def commit_scored():
+    rng = reg("ebx")
+    if COMMIT.get("rng") != rng:
+        return
+    if rng != getattr(glob_color, "cur", None):
+        out("  commit %s" % range_name(rng))
+    for line in COMMIT["lines"]:
+        out(line)
+    if COMMIT["own"]:
+        out("      own affinity: %s" % ", ".join("%s -%d" % (GREGS.get(r, r), wt) for r, wt in COMMIT["own"]))
+    avail = set(bitset(rd(rng + 0x20)))
+    score = [sx32(rd(SCORE + 4 * r)) for r in range(9)]
+    order = [r for r in class_regs(COMMIT["cls"]) if r in avail]
+    best = None
+    for r in order:
+        if best is None or score[r] < score[best]:
+            best = r
+    COMMIT.update(order=order, best=best, score=score)
+    shown = order if not RAW else range(1, 9)
+    out("    score %s" % ", ".join("%s %d" % (GREGS.get(r, r), score[r]) for r in shown) +
+        ("" if order else " (nothing available)"))
+    bad = [GREGS.get(r, r) for r in range(1, 9) if score[r] != COMMIT["expect"][r]]
+    if bad:
+        out("    !! score model differs on %s: expected %s" % (" ".join(bad), ", ".join(
+            "%s %d" % (GREGS.get(r, r), COMMIT["expect"][r]) for r in range(1, 9))))
+
+
+def commit_picked():
+    if "order" not in COMMIT:
+        return
+    r = reg("edi")
+    order, score = COMMIT["order"], COMMIT["score"]
+    text = "    picked %s" % GREGS.get(r, "none")
+    if order and r != order[0]:
+        text += "  ** not first free: %s scores %d, %s %d" % (
+            GREGS.get(order[0]), score[order[0]], GREGS.get(r, r), score[r])
+    if r != (COMMIT["best"] or 0):
+        text += "  !! the score model picks %s" % GREGS.get(COMMIT["best"], "none")
+    out(text)
+    COMMIT.clear()
 
 
 def glob_final():
@@ -634,6 +766,10 @@ def main() -> None:
         Stop(ADDR["color"], glob_color)
         Stop(ADDR["split"], glob_split)
         Stop(ADDR["assigned"], glob_assigned)
+        if ADDR["commit"]:
+            Stop(ADDR["commit"], commit_entry)
+            Stop(ADDR["scored"], commit_scored)
+            Stop(ADDR["picked"], commit_picked)
         if ADDR["skipped"]:
             Stop(ADDR["skipped"], glob_skip)
         Stop(ADDR["rot_reset"], glob_final)

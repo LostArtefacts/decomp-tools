@@ -207,14 +207,66 @@ position.
 Every variable, parameter and compiler temp (CSE values, loaded fields,
 induction pointers) the optimiser kept as a candidate is a live range.
 Ranges are colored one at a time from a list sorted by priority
-descending, then position descending (0x10715922). Each takes the FIRST
-register of eax ecx edx esi edi ebx ebp it does not conflict with
-(0x107159af). A range live across a call conflicts with eax/ecx/edx, so
-call-crossing ranges get esi, edi, ebx, ebp in priority order. A range
-used as a byte skips esi/edi/ebp (`unsigned char c` -> ebx). When a
-range cannot be colored it is split, the pieces go back on the list,
-all priorities are recomputed and a new round starts (`-- round` in the
-output).
+descending, then position descending (0x10715922). Each gets one of the
+registers of eax ecx edx esi edi ebx ebp it does not conflict with (its
+available set, range +0x20); which one is a score, not "the first free"
+(below). A range live across a call conflicts with eax/ecx/edx, so
+call-crossing ranges get esi, edi, ebx, ebp. A range used as a byte
+skips esi/edi/ebp (`unsigned char c` -> ebx). When a range cannot be
+colored it is split, the pieces go back on the list, all priorities are
+recomputed and a new round starts (`-- round` in the output).
+
+Which register: the commit routine (0x107245c3 in 8447, 0x10716715 in
+8168, called once from the coloring loop) zeroes score[1..8] at
+0x1079d868 and, for the range R being colored:
+
+    for each neighbour n of R not colored yet, with W(n) = n+0x3c
+    (weighted references) > 0:
+        for each affinity (r, a) of n with r still in n's available set:
+            score[r] += a
+        if n's available set is exactly {r}:
+            score[r] += 100 * W(n)
+    for each affinity (r, a) of R itself:
+        score[r] -= a
+    pick: walk R's class list (0x107a0a14[class]; class 0 is
+    eax ecx edx esi edi ebx ebp), skip registers R cannot have, and
+    replace the current pick only on a STRICTLY lower score
+    (cmp; jge at 0x10724724)
+
+Low score wins. With no affinities in play every score is 0 and the
+walk keeps its first available register, which is why "first free" held
+for most ranges; on an exact tie the earlier register of that order
+still wins, so equal scores never reorder anything.
+
+Affinities (+0x34: {next, register descriptor (+0x1c = number),
+weight}) come from two places, both via 0x107230c9, +1 per call:
+- the per-block pass (0x1072255a) ties a range to a fixed register for
+  each mov/lea between them: seen for a value returned (`return s;` ->
+  eax) and a call result copied into the range (`x = g();` -> eax);
+  other fixed-register uses (shift counts, divides) presumably do the
+  same, check with the trace;
+- after R is committed, every copy partner of R (`a = b;` pairs, the
+  bit set at 0x1079d860) gets +1 for R's register (0x10724861), so a
+  copy partner colored later is pulled to the same register.
+
+`c2oracle.py SRC NAME --global` prints all of it per range: each
+neighbour that moved a score ("wants edx +1", "only ebx: +100*6"), the
+range's own affinities, the score of each register it may take in walk
+order, and the pick, flagged `** not first free` when the score moved
+it. The trace recomputes the score from the rule above and prints `!!`
+if c2 disagrees; on BaboonControl (68 picks) and the probes it never
+did. Checked cases:
+
+    int s = 0, i; for (i = 0; i < n; i++) s += p[i] * i; return s;
+      s has eax -2 (it is returned); i is
+      colored first, and its neighbour s "wants eax +2", so i takes ecx
+      and the address temp edx, leaving eax for s
+    unsigned char c = cb[0], ... (a byte range: only ebx)
+      every neighbour of c sees "only ebx: +100*6" and avoids ebx, so a
+      temp whose only affinity (ecx) is unavailable takes ebp over ebx
+    BaboonControl: _item2's second range sees five neighbours left with
+      only ebp (+4300) and takes ebx; a temp with edx -1 (one mov with
+      edx) takes edx over eax
 
 Priority (0x10714414 per block, 0x10714c06 / 0x10714c2e referenced,
 0x10714c53 live through):
@@ -241,7 +293,20 @@ Checked cases (oracle and listing agree):
 
 To give X a better register than Y: raise X's priority (reference it in
 a block with more live ranges, or in a loop) or lower Y's (keep Y live
-through more blocks unused); at equal priority, define X first.
+through more blocks unused); at equal priority, define X first. When
+the priority order is right but the register is not, move the score:
+- a copy to or from a fixed register (return X, X = call()) gives X
+  -1 on that register, so X takes it; the same copy on a neighbour that
+  is colored after X gives X +1 there, so X avoids it;
+- copy partners inherit the register of whichever commits first
+  (`a = b;` gives the later one +1 for the earlier one's register):
+  introducing or removing a plain copy between two values moves the
+  second one onto or off the first one's register;
+- a neighbour that can only have one register (a byte value left with
+  ebx, a range whose other registers are taken) repels every range
+  colored before it by 100 * W, so making a value a byte (or not), or
+  changing what it is live across, moves its neighbours off that
+  register.
 `c2oracle.py SRC NAME --global` prints the numbers, `--raw` every block's
 contribution, so check the gap before editing.
 
@@ -833,3 +898,40 @@ reload first, hence lower flags' priority) was an inference from one case.
 Trace numeric IDs and actual materialization lists with `--ranges` before
 changing priorities. A same-round range-ID/list-order change can alter
 reload ordering while the normal G1 trace stays identical.
+
+## Quick levers for a red function
+
+Register choice (rule G1; check with `c2oracle.py SRC NAME --global`,
+whose picks say `** not first free` when the score moved them):
+- Priority decides the order ranges are colored in; the score decides
+  which register each gets. Fix the order first, then the score.
+- A copy to or from a fixed register (`return x;`, `x = f();`) gives x
+  -1 on that register: x takes it, and neighbours colored before x
+  avoid it.
+- Copy partners inherit the register of whichever commits first: a
+  plain `a = b;` gives the later one +1 for the earlier one's register.
+- A neighbour left with a single register (a byte value with only ebx,
+  a range whose other registers are taken) repels every range colored
+  before it by 100 x its weighted references.
+
+Usually neutral, don't retry them without a new reason:
+- the source order of the operands of `+ * & | ^` (and of the addends of
+  one chain), and compare direction: the operand sort orders them by key
+  and `b >= a` is canonicalised to `a <= b` (rule S1);
+- renaming a local: names feed nothing (keys use back end slots and
+  front end IDs, rule S2).
+Not neutral, despite appearances: local declaration order (front end IDs
+pick C1 candidate buckets, so recycled range IDs and the split reload
+order, rules C2 and R1; VC5's operand hash used the IDs directly), and
+if/else polarity, goto into a shared tail vs repeating it, `return` vs
+`goto` (block layout, rule L2's round robin entry).
+
+Fix the phase upstream: a cyclic register diff (eax/ecx/edx rotated by
+one through a block) usually comes from the local picker's round robin
+pointer entering the block, which is where the PHYSICALLY PRECEDING
+block's code left it, even when that block's bytes already match (rule
+L2; identical bytes do not prove unchanged allocator state). Edit the
+preceding block's source: a macro vs its expansion, goto vs return, a
+no-op wrapper or cast, one call per arm vs a shared tail. Locate the
+block by ablation: blank one block or switch case at a time, recompile,
+and see which removal flips the phase of the diff, then work there.
