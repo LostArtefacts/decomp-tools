@@ -198,7 +198,7 @@ def commit_msg(message_file):
         return 0
     if len(new) > 1:
         print(f"commit-msg: {len(new)} functions newly match; commit one function at a time:")
-        for address, name in new:
+        for address, name, *_ in new:
             print(f"  {address} {name}")
         return 1
     if new:
