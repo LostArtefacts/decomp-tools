@@ -926,6 +926,26 @@ order, rules C2 and R1; VC5's operand hash used the IDs directly), and
 if/else polarity, goto into a shared tail vs repeating it, `return` vs
 `goto` (block layout, rule L2's round robin entry).
 
+Statement shapes that keep the bytes of a statement but move registers
+around it:
+- A constant ternary passed as an argument (`f(.., c ? K1 : K2)`) and
+  `if (c) v = K1; else v = K2; f(.., v)` both come out as the same
+  branchless `neg; sbb; and; add` select, but the named form evaluates
+  the select before the other arguments' loads, which changes the round
+  robin order and which CSE temp is global. S_DrawHealthBar matched with
+  the if/else form (eax for the select, ecx for `font_height >> 2`).
+- Move a load-only statement below a store that retail performs first.
+  When retail loads a field after an unrelated store (`mov [x],eax`
+  then `mov eax,[y]`), the source had that assignment after the store:
+  the earlier load interferes with the stored value's register and
+  pushes the local onto a callee-saved register. CreateLightList's
+  `bakNum = item->il.nCurrentLights;` below the `room_number` store
+  freed esi for the loop counter and removed a whole-function ebp push.
+- Before any of this, look for a twin in ../tr03/src and ../tr02/src:
+  the statement structure (an early `break` arm vs a combined condition)
+  decides block order and with it the allocator's state. RefreshCamera
+  matched once it had TR3's case 1 shape.
+
 Fix the phase upstream: a cyclic register diff (eax/ecx/edx rotated by
 one through a block) usually comes from the local picker's round robin
 pointer entering the block, which is where the PHYSICALLY PRECEDING
