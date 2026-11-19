@@ -719,6 +719,66 @@ the two wanted loads. The copy itself was optimized away. `mesh->z`
 already had rank 1 from its nonzero-offset address, so it stayed first
 without relying on the hash.
 
+### Rule S3: matrix rows sort by tuple-result temp slots (2026-11-19)
+
+A transform such as `pos.x = offsets[0] * mptr[M00] + offsets[1] *
+mptr[M01] + ...` is sorted twice. The first sort sees the vertex loads
+as `op15f([offsets+k])`. The second sort, after CSE, decides the emitted
+order. In the second sort, the vertex values are compiler temps:
+`temp@N`, hashed `N << 6` (rule S2). A product's hash is `0x2a +
+h([mptr+k]) + (N << 7)`. The memory operand `[temp+0]`, where temp is
+`mptr + k`, takes its address tree's key, `0x28 + hash(mptr) + 2 * k` (add
+opcode, then the constant shifted by its operand position).
+Thus, if ranks and counts are equal, each row sorts its products by the
+vertex temps' slots modulo 512. In row 0, the `M00` product is
+`op16f(temp, [mptr+0])`. Its zero-offset load has key `00.01.2007`
+(`7 + (hash(mptr) << 8)`), so it competes with the vertex temp itself:
+retail's `mov ebx,[edi]; imul ebx,ecx` requires `(N << 6) & 0xffff`
+below 0x2007. Otherwise the result is `mov ebx,ecx; imul ebx,[edi]`.
+
+Where the slots come from (build 8447, traced with breakpoints on the
+allocators):
+
+- The temp pool is reset for every function (0x1071bcc6); the first slot
+  is 64. Records come in chunks of 32 consecutive slots (0x107053f4).
+  Several pools take chunks, so one pool's slot sequence jumps by 32 when
+  another pool has taken the next chunk (in DoUwEffect: ...991, 1024).
+- Class 3 temps (0x10701da6, case 0x10701dc0) reuse a LIFO free list at
+  0x1079bc60 (freed by 0x10703b10) before bumping.
+- The vertex values in the second sort are class 15 temps: the result
+  of each new tuple from 0x10706421 (0x107064bb, `cl = 0xf`). They are
+  only bumped (pool 0x1079bc68) and never reused. Their slots
+  therefore follow tuple creation order. That order covers the whole
+  function: first every distinct expression, then every distinct
+  surviving assignment (`op15b`, 0x10705f10, value numbered through
+  0x1070623c), then the CSE copies, then each statement's tuples again,
+  where the row's loads get their temps. Duplicates are value numbered
+  and do not count. Locals forwarded before this pass (single-use
+  `x1 = ...` for a call argument) do not count either.
+
+Consequence: a matrix row's order depends on how many distinct tuples
+the WHOLE function creates before the transform statement, including
+code after it in the source (the assignment pass runs over the whole
+function before the statement is regenerated). It also depends on where
+the 32-slot chunk boundaries fall. The `--sort` lists of the first pass
+are the same either way. Read the second pass, the lists where the
+vertex operands are `temp@N`.
+
+DoUwEffect (2 bytes red) shows the dependence. With the matched body,
+z, y and x get slots 986, 988 and 991, and `M00` loses to x
+(`0xf7c0 > 0x2007`). Restoring a `uint8 yvel` copy adds one distinct
+assignment and moves only x, to 1024 (hash 0). `M00` then comes first,
+but rows 1 and 2 lose x's lead (`0x292 + 0` vs `0x29a + 0xee80`). Writing
+the colour test as `== 7` with the arms swapped adds one distinct compare
+and has the same effect, but it changes the block layout. The retail
+order of all three rows needs z < y < x, all in the chunk that starts at
+1024. The function has to create six or more extra distinct tuples
+before the transform without changing code. No neutral source for them
+has been found yet. The following changed nothing: `(p->yvel & ~7) >> 6`
+(folded by the front end), swapped operands of duplicate arguments
+(canonicalised), and single-use argument locals (forwarded). Multi-use
+locals shift the slots, but they change the allocation.
+
 ## Opcodes seen in VC6 sort output
 
 op16d add, op16f index scale (`i * 2`), op171 shl, op172 and, op173 or,
@@ -990,6 +1050,12 @@ pick C1 candidate buckets, so recycled range IDs and the split reload
 order, rules C2 and R1; VC5's operand hash used the IDs directly), and
 if/else polarity, goto into a shared tail vs repeating it, `return` vs
 `goto` (block layout, rule L2's round robin entry).
+A matrix row loaded in the wrong order, or `mov r,vertex; imul r,[mptr]`
+where retail has `mov r,[mptr]; imul r,vertex`, can come from any
+distinct expression or surviving assignment elsewhere in the function,
+even when the first-pass `--sort` lists look right. Read the second-pass
+lists, where the vertex operands are `temp@N`: those slots count every
+distinct tuple the function creates before the statement (rule S3).
 
 Statement shapes that keep the bytes of a statement but move registers
 around it:
