@@ -92,6 +92,10 @@ frontier *args: _orig
 permute name *args: _orig
     python3 tools/permute.py {{ name }} {{ args }}
 
+# Search every function of hooks.allow_diff in turn (--budget SECONDS -j JOBS --names FILE); build/permute/batch
+permute-all *args: _orig
+    python3 tools/permute.py --all {{ args }}
+
 # Render docs/progress.svg from symbols.csv and the build
 progress: build _orig
     python3 tools/render_progress.py
