@@ -988,6 +988,13 @@ around it:
   end of each arm lay out differently: CheckSenetWinner's retail order
   (arm 1, its `return 0` block, arm 2) needed a return in each arm and
   no final return.
+- Where an initialisation sits relative to an early return changes which
+  callee-saved registers the prologue pushes. Retail TestLaraSlide
+  zeroes ebx in the entry block and pushes esi only after the early
+  `return 0`; that was `ang = 0;` above the
+  `if (ABS(tilt_x) <= 2 && ...) return 0;` test (with TR3's arms). The
+  hoist alone, without the TR3 arms, made coll a global range and was
+  worse, so try it together with the twin's shape.
 
 Algebraic rewrites of /Og (any /O with g; /Od keeps the source form):
 c2 factors `K - c * x` into `(K / c - x) * c` when c divides K, folds
