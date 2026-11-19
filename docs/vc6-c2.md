@@ -968,6 +968,26 @@ around it:
   InitObjectLighting's second loop the indexed form gave the light
   pointer ebx and the `&D3DLights[num_active]` offset edi as retail
   (the legacy source's spelling); `light++` gave them the other way.
+- Block-scoped locals move frame slots. A SLOT red (the same code with
+  stack offsets permuted) where an address-taken local such as
+  `room_number` sits at the top of the frame in ours and at the bottom
+  in retail was a `{ sint16 room_number; sint32 wx, wy, wz; ... }` block
+  repeated per GetFloor probe in the TR3 twin. MoveCamera and LookCamera
+  matched with TR3's blocks (plus TR3's `wx, wy, wz` and
+  `dx, dy, dz` before `wx = pos1.x` statement orders for the leftover
+  register and load-order hunks). Function-scope declaration order did
+  not move those slots.
+- Reusing a parameter instead of a new local changes the operand sort.
+  An add's operands sort by a hash of their back end symbol index (rule
+  S2), and a fresh local gets a later index than the parameters. In
+  DrawSprite `s = (sint32)(...(size << 1));` sorted `s` ahead of `x`
+  and `y` (`lea ebx,[eax+edi]`), while retail's `lea ebx,[edi+eax]`
+  came from `size = (sint32)(...(size << 1));` with `x - size` etc.
+  Swapping the operands in the source did nothing, as usual.
+- A trailing shared `return 1;` after an if/else and a `return 1;` at the
+  end of each arm lay out differently: CheckSenetWinner's retail order
+  (arm 1, its `return 0` block, arm 2) needed a return in each arm and
+  no final return.
 
 Algebraic rewrites of /Og (any /O with g; /Od keeps the source form):
 c2 factors `K - c * x` into `(K / c - x) * c` when c divides K, folds
