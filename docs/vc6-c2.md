@@ -944,6 +944,24 @@ UpdateFireSparks matched once each continue path and the loop end got
 their own `p++`. In none of them was the statement order or the loop
 form (for, while, index vs pointer, `&arr[i]`) the cause.
 
+When retail is biased too, but at another field (`OFFSET arr+k1` vs
+ours `OFFSET arr+k2`, both nonzero), the merge kept a different
+survivor: one advance site is right, the use counts are not. The counts
+are taken before CSE, so a field read once into a local and a field
+spelled out at every use count differently even though both load it
+once. S_DrawFires was biased at `on` (+0xc, three uses) where retail
+is biased at `room_number` (+0xe): `r = &room[fire->room_number];
+phd_left = r->left; ...` gives room_number one use, and
+`phd_left = room[fire->room_number].left;` four times gives it four,
+enough to win the chain, and the function matched. Trace the pairs with
+the IV tracer (scratchpad gh/ivoracle.py, "pair: ... (defs N)") to see
+which temp has to win and by how much.
+
+Check the bias before applying the split: in DrawDebris, DrawShockwaves,
+DrawLightning, S_DrawSplashes, S_DrawSparks and UpdateLocusts retail
+has the same `OFFSET arr+k` as ours, and the split made each of them
+worse.
+
 ## Quick levers for a red function
 
 Register choice (rule G1; check with `c2oracle.py SRC NAME --global`,
