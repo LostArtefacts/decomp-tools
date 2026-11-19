@@ -962,13 +962,35 @@ around it:
   `vec->x = t.x; vec->y = t.y; vec->z = t.z;` allocate differently; the
   field copies let the x87 allocator keep t.x on the stack and store it
   last, as retail D3DTransform does (one store/faddp swap left there).
+- Indexing vs a walking pointer: `light[i].Active` with `&light[i]`
+  and `for (...; i++, light++) light->Active` both come out as one
+  pointer induction register, but they are different ranges. In
+  InitObjectLighting's second loop the indexed form gave the light
+  pointer ebx and the `&D3DLights[num_active]` offset edi as retail
+  (the legacy source's spelling); `light++` gave them the other way.
 
-Not reachable from source so far: c2 /O2 reassociates `a - K - b` into
-`a + (-K - b)` and factors `K - c * x` into `(K / c - x) * c` whatever
-the spelling (parentheses, separate statements, casts to signed types);
-/Od keeps both, so it is c2, not c1. In a probe only an unsigned
-multiply (`12U * x`) kept `K - c * x` as retail has it. TestLaraVault,
-UserControl_bike and InitObjectLighting are red on exactly this.
+Algebraic rewrites of /Og (any /O with g; /Od keeps the source form):
+c2 factors `K - c * x` into `(K / c - x) * c` when c divides K, folds
+`(x + 1) * 2` into `lea [2x + 2]`, and reassociates `a - K - b` into
+`a + (-K - b)` when a is a call or abs() (into `a - b - K` when a is a
+leaf). Spelling inside the expression (parentheses, separate
+statements, casts, unsigned literals, `* 3 * 4`) does not stop it,
+because single-use locals are forwarded first. What does:
+- An int expression converted to unsigned by its consumer is left
+  alone. A probe `return -9600 - 12U * x;` kept the shape, but in a
+  call argument only an unsigned PARAMETER did: TestLaraVault matched
+  once the callers' prototype was `uint32 phd_sqrt(uint32 num);` (TR3's
+  3dglodef.h spelling, the legacy's `ulong`), with the definition still
+  signed (retail phd_sqrt uses sar and jg). Look at the prototype of
+  the callee before the expression.
+- A shift is not folded with the add under it: InitObjectLighting's
+  `m = state + 1; ... * (m << 1)` (three uses) kept retail's
+  `inc; lea [r+r]` where `m = (state + 1) * 2` and `(m * 2)` fold.
+- A value with a second use stays a value: `v = abs(x) - K; ...
+  (v - p); g = v;` keeps `sub K; sub p`. UserControl_bike's
+  `abs(vel) - 0x2000 - pitch1` has no such use in retail and is still
+  red; TR3's `if (v < 0) r = abs(v >> 1); else r = abs(v);` shape
+  (c2 merges the two abs) turns it into the leaf order `sub p; sub K`.
 
 Fix the phase upstream: a cyclic register diff (eax/ecx/edx rotated by
 one through a block) usually comes from the local picker's round robin
