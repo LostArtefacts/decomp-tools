@@ -1078,6 +1078,23 @@ around it:
   matched once it had TR3's case 1 shape.
   MoveLaraPosition matched with TR3's `mptr = phd_mxptr;` local and its
   `x`, `y`, `z`, `dist` locals for the phd_sqrt test.
+  LoadRooms matched with TR3's `size = r->x_size * r->y_size;` and
+  `size * sizeof(FLOOR_INFO)` at each use: retail's `imul eax,ecx;
+  lea ebx,[eax*8]` where one `size = x * y * sizeof(FLOOR_INFO)` gave
+  `imul ebx,eax; shl ebx,3`. GetJointAbsPosition matched with TR3's
+  `for (i = 0; i < joint; i++, bone += 4)` loops (a counter instead of
+  decrementing `joint`, which also removed a frame slot), the
+  `if (item->data) ... else ...` select, the stash locals initialised
+  in their declarations and the result stores repeated in both arms.
+  A twin's whole-function shape is worth trying even when no single
+  hunk points at it.
+- A sint16 local stored as a dword in a different slot order than
+  retail can be a semantic slip, not an allocation problem: in
+  HarpyControl retail stores `info.angle >> 1` to head and joint 2's
+  local and `info.x_angle` to joint 1's (the legacy source had them the
+  other way). Read which slot each CreatureJoint push loads before
+  permuting declarations; the zero-initialisation stores then follow
+  source order (rule P2).
 - A call inside an argument list that retail evaluates before the
   argument pushes that precede it (here a `push ebx` of 0 after the
   call) was a named temp: FlameControl matched with
