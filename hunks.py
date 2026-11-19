@@ -54,10 +54,14 @@ Each hunk gets a kind, the first that fits:
     moved    as extra or missing, but the other side has the same
              instructions elsewhere in the function
     sched    the same instructions in another order
+    swap     (instead of disp, global or replace) two hunks at most
+             SWAP_REACH instructions apart, each the other's original:
+             operands evaluated in another order
     bias     (instead of disp, sched or replace) the instructions that
              are the same at level c differ in displacements off
-             registers, and most by the same amount: a pointer that
-             walks biased to a field
+             registers, and most (at least BIAS_MIN) by the same
+             amount, none by its opposite: a pointer that walks biased
+             to a field
     replace  anything else
 
 and a signature: the kind and both sides' instructions as level c
@@ -82,6 +86,8 @@ import build, compare, project, redtriage
 ROOT = project.ROOT
 LEVELS = "abc"
 CONTEXT = 2
+BIAS_MIN = 3  # instructions one displacement difference needs to make a bias
+SWAP_REACH = 12  # instructions between two hunks that trade places
 FUZZY_MIN = 4  # instructions of both sides a signature needs to merge with others
 NUMBER = re.compile(r"-?\b(?:0x[0-9a-f]+|\d+)\b")
 BRACKET = re.compile(r"\[[^\]]*\]")
@@ -270,6 +276,14 @@ def hunks(func, ours, theirs, level, gap):
         h.bias = bias(h)
         if h.bias is not None and h.kind not in ("slot", "frame", "global"):
             h.kind = "bias"
+    # Two loads that trade places: an operand order, not a field.
+    near = [h for h in out if h.kind in ("disp", "global", "replace")]
+    for x, h in enumerate(near):
+        for g in near[x + 1:]:
+            if g.i1 - h.i2 > SWAP_REACH:
+                break
+            if h.keys("ours", "b") == g.keys("theirs", "b") and h.keys("theirs", "b") == g.keys("ours", "b"):
+                h.kind = g.kind = "swap"
     return out
 
 
@@ -292,7 +306,8 @@ def displacement(op):
 def bias(h):
     """The difference of the displacements, the original's less ours, in
     the instructions that are the same at level c, when one difference
-    covers most and at least two: a pointer walking with a bias."""
+    covers most and at least BIAS_MIN, and the opposite one none: a
+    pointer walking with a bias."""
     # Without displacements: [reg32] and [reg32 + N] pair too.
     a = [re.sub(r" \+ N(?=\])", "", k) for k in h.keys("ours", "c")]
     b = [re.sub(r" \+ N(?=\])", "", k) for k in h.keys("theirs", "c")]
@@ -311,7 +326,8 @@ def bias(h):
         return None
     delta, count = deltas.most_common(1)[0]
     h.bias_count = count
-    return delta if count >= 2 and count * 3 >= 2 * sum(deltas.values()) else None
+    # Loads that trade places show the opposite difference too.
+    return delta if count >= BIAS_MIN and not deltas[-delta] and count * 3 >= 2 * sum(deltas.values()) else None
 
 
 def kind(h, added, removed):
@@ -366,7 +382,7 @@ def collect(wanted, level, gap):
 
 
 # Kinds that may merge: the numbers differ, or the instructions do.
-FAMILY = {"frame": "n", "slot": "n", "global": "n", "disp": "n", "imm": "n"}
+FAMILY = {"frame": "n", "slot": "n", "global": "n", "disp": "n", "imm": "n", "swap": "n"}
 
 
 def fuzzy(groups, ratio, anchored):
