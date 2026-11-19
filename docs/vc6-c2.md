@@ -899,6 +899,51 @@ Trace numeric IDs and actual materialization lists with `--ranges` before
 changing priorities. A same-round range-ID/list-order change can alter
 reload ordering while the normal G1 trace stays identical.
 
+## Rule V1: a walking pointer's field IVs merge only with one increment
+
+Build 8447. The loop optimiser runs per loop from 0x10743d41 (inner loops
+first). Loops with more blocks than `-Loop#` (`/d2Loop#`, default
+unlimited) skip it: with /d2Loop0 the counter stays `inc; cmp; jl` and
+nothing is rebiased. Its induction variable pass is 0x107449b0:
+
+1. 0x107463c6 strength-reduces every `p + k` address of a walking
+   pointer p (each field it touches, single uses included): a temp
+   `t = &arr + k` appended to the preheader, `t += stride` after each
+   in-loop definition of p.
+2. 0x10745699 (second call, 0x10744a49) merges the temps. Its worklist
+   (jump table case 4, 0x107460d2) takes preheader assignments `t = init`
+   whose t has exactly one definition in the loop, that definition being
+   `t = t +/- c`. It walks them newest first, so the temps of the fields
+   (in roughly reverse preheader order) come before p, which comes last.
+   For two candidates with the same stride it compares their use counts
+   (tuples that read them, 0x107457cd): the one with fewer is rewritten
+   as the other plus a delta; on a tie the later one survives. Each merge
+   adds the victim's uses to the survivor, so the first pair decides and
+   the survivor swallows everything, p included: the pointer register
+   ends up biased at that field's offset (`mov esi,OFFSET Drips+13`,
+   every other field at `[esi-13]`, `[esi+6]`, ...).
+3. Later passes put unmerged field temps back on p as `[p+k]`; a temp
+   whose address is itself a value (`&p->RoomNumber` passed to GetFloor)
+   stays a pointer register of its own (`mov edi,OFFSET Drips+0x14`,
+   `add edi,0x18` next to `add esi,0x18`).
+
+So the number of places p is advanced decides the bias. With
+`for (...; i--, p++)` and `continue` the loop has one increment, every
+temp qualifies, and the pointer is rebiased. When the source advances
+p before every `continue` and once at the bottom
+(`if (!p->On) { p++; continue; } ... p++; }`), each temp gets one
+increment per advance, fails the one-definition test, nothing is merged,
+and p keeps offset 0. The back end cross-jumps the duplicated increments
+into one latch, so the bytes show no trace of them.
+
+Recognise it: retail `mov esi,OFFSET arr` (maybe with a second
+`mov edi,OFFSET arr+k` for an address-taken field), ours
+`mov esi,OFFSET arr+k` and `lea edi,[esi+...]`. UpdateDrips,
+UpdateBlood, UpdateBubbles, UpdateGunShells, UpdateSmokeSparks and
+UpdateFireSparks matched once each continue path and the loop end got
+their own `p++`. In none of them was the statement order or the loop
+form (for, while, index vs pointer, `&arr[i]`) the cause.
+
 ## Quick levers for a red function
 
 Register choice (rule G1; check with `c2oracle.py SRC NAME --global`,
@@ -920,7 +965,9 @@ Usually neutral, don't retry them without a new reason:
   and `b >= a` is canonicalised to `a <= b` (rule S1);
 - renaming a local: names feed nothing (keys use back end slots and
   front end IDs, rule S2).
-Not neutral, despite appearances: local declaration order (front end IDs
+Not neutral, despite appearances: where a walking pointer is advanced
+(one `p++` in the for header vs one before each `continue` and at the
+bottom: rule V1 decides its bias from that), local declaration order (front end IDs
 pick C1 candidate buckets, so recycled range IDs and the split reload
 order, rules C2 and R1; VC5's operand hash used the IDs directly), and
 if/else polarity, goto into a shared tail vs repeating it, `return` vs
