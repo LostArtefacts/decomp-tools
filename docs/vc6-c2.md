@@ -984,6 +984,22 @@ around it:
   and `y` (`lea ebx,[eax+edi]`), while retail's `lea ebx,[edi+eax]`
   came from `size = (sint32)(...(size << 1));` with `x - size` etc.
   Swapping the operands in the source did nothing, as usual.
+- Dead code is not free. A bare `if (x->enemy != lara_item)
+  phd_atan(lara_item->pos.z_pos - item->pos.z_pos, ...);` (a call
+  whose result nobody reads) was what the decompiler saw of TR3's
+  whole lara_info block, and it allocated differently from it: ours
+  gave lara_item eax and loaded lara.x first, retail gave lara_item ecx
+  and loaded lara.z first. Writing the block out again,
+  `if (c->enemy == lara_item) { larainfo.angle = info.angle; ... }
+  else { dz = ...; dx = ...; larainfo.angle = (sint16)(phd_atan(dz, dx)
+  - item->pos.y_rot); if (larainfo.angle > -0x4000 && larainfo.angle <
+  0x4000) larainfo.ahead = 1; else larainfo.ahead = 0; ... }` with
+  `larainfo` never read, gives the same bytes as retail. The dead `if`
+  on the call's result is what matters (without it the block is still
+  wrong; the `distance` and `==` arm can go). TemplarControl,
+  SphinxControl, SmlscorpControl and MummyControl matched with it.
+  When a decompiled call's result is unused, or a lone load seems to
+  have no purpose, look for the twin's dead block that fed it.
 - A trailing shared `return 1;` after an if/else and a `return 1;` at the
   end of each arm lay out differently: CheckSenetWinner's retail order
   (arm 1, its `return 0` block, arm 2) needed a return in each arm and
