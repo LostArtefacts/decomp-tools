@@ -84,6 +84,10 @@ fn *args: _orig
 triage *args: build _orig
     python3 tools/redtriage.py {{ args }}
 
+# Group the differences of hooks.allow_diff's functions into families (hunks.py; --level a|b|c --top N -v --lines)
+hunks *args: build _orig
+    python3 tools/hunks.py {{ args }}
+
 # Check that no byte of a function that differs stopped matching (frontier.py; --update records)
 frontier *args: _orig
     python3 tools/frontier.py {{ args }}
