@@ -977,6 +977,27 @@ around it:
   `dx, dy, dz` before `wx = pos1.x` statement orders for the leftover
   register and load-order hunks). Function-scope declaration order did
   not move those slots.
+- The same goes for locals used in two switch cases. CrocgodControl's
+  cases 3 and 5 each fill two PHD_VECTORs and a PHD_3DPOS for a
+  missile. At function scope the vectors took the wrong one of their
+  two slots, whatever the declaration order or names, and case 3's
+  `TriggerCrocgodMissile(&mPos, item->room_number, 0)` was tail-merged
+  into case 5's identical call (`push 0; jmp` into case 5). Retail keeps
+  three calls per case. `{ PHD_3DPOS mPos; PHD_VECTOR pos, pos2; ... }`
+  in each case fixed both: the two blocks share frame slots, so the
+  frame size does not change, and the calls name different symbols, so
+  they are not merged. When retail repeats a call that ours merges
+  across cases, or the slots of a case's locals are swapped, scope the
+  locals per case.
+- A repeated argument expression that retail computes once, early, was a
+  named local. HammerheadControl's `CreatureJoint(item, n, -2 * angle)`
+  x3 and `(item, 3, 2 * angle)` came out with the doubling after the
+  switch and the literal 1 in a register. Retail computes
+  `lea ebp,[ebx+ebx]` in the switch's dispatch block and pushes 1 as an
+  immediate. That was `sint16 joint; ... angle = CreatureTurn(...);
+  joint = angle << 1;` above the switch, with `-joint` and `joint` as
+  the arguments. A sint32 `joint` adds a `movsx`, so the type is visible
+  too.
 - Reusing a parameter instead of a new local changes the operand sort.
   An add's operands sort by a hash of their back end symbol index (rule
   S2), and a fresh local gets a later index than the parameters. In
