@@ -1099,6 +1099,15 @@ around it:
   argument pushes that precede it (here a `push ebx` of 0 after the
   call) was a named temp: FlameControl matched with
   `g = (GetRandomControl() & 0x1F) + 96;` above the TriggerDynamic call.
+  The converse holds for an argument that holds a call: a call-free term
+  of it that retail computes before the argument pushes was a named
+  value. FlameEmitterControl's `(-item->item_flags[1] >> 10) -
+  (GetRandomControl() & 1) + 16` came out with the shift after the
+  pushes; retail loads and shifts item_flags[1] before them, which was
+  `x = -item->item_flags[1] >> 10;` above the call and
+  `x - (GetRandomControl() & 1) + 16` as the argument (plus the locals
+  scoped to the TriggerActive block and `uint32 distance` for the
+  unsigned `jae`). permute's named_temp tries such terms.
 - Equal-priority stores come out in IL order (rule P2), so a run of
   zeroing stores follows the source order: retail's head_y, head_x,
   torso_y, torso_x order in MovableBlockCollision was the statement

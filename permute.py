@@ -1102,14 +1102,51 @@ def names_in(expr):
     return set(re.findall(r"(?<![\w.>])([A-Za-z_]\w*)(?!\w)(?!\s*\()", expr))
 
 
+def top_terms(expr):
+    """Spans of the terms of `expr` split at its top-level binary + and -,
+    each with the span inside the parentheses around a whole term."""
+    spans, depth, start = [], 0, 0
+    for k, ch in enumerate(expr):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch in "+-" and depth == 0 and k > 0 and expr[k - 1] == " " and expr[k + 1:k + 2] == " ":
+            spans.append((start, k))
+            start = k + 1
+    spans.append((start, len(expr)))
+    out = []
+    for c, d in spans:
+        while c < d and expr[c] == " ":
+            c += 1
+        while d > c and expr[d - 1] == " ":
+            d -= 1
+        inner = (c + 1, d - 1) if expr[c:c + 1] == "(" and expr[d - 1:d] == ")" and balanced(expr[c + 1:d - 1]) \
+            else (c, d)
+        out.append((c, d) + inner)
+    return out if len(out) > 1 else []
+
+
+def balanced(text):
+    depth = 0
+    for ch in text:
+        depth += ch in "(["
+        depth -= ch in ")]"
+        if depth < 0:
+            return False
+    return depth == 0
+
+
 def named_temp(body, rng):
     """Hoists a call argument used more than once (or holding a call) in a
     run of statements into a new local, set before the first of them or
-    as early as its operands allow."""
+    as early as its operands allow; or the call-free term of an argument
+    that holds a call (`(-f >> 10) - (rand() & 1) + 16`), which retail
+    then evaluates before the argument pushes."""
     lines = body.split("\n")
     bl = blocks(lines)
     decl = declared(lines, bl)
-    groups = {}
+    groups, terms = {}, set()
     for i, line in enumerate(lines):
         if not SIMPLE.match(line) or line.lstrip().startswith(("return", "case", "else")):
             continue
@@ -1121,7 +1158,14 @@ def named_temp(body, rng):
                     or "=" in expr.replace("==", "").replace("<=", "").replace(">=", "").replace("!=", ""):
                 continue
             groups.setdefault(expr, []).append((i, a, b, neg))
-    cands = [(e, occ) for e, occ in groups.items() if len(occ) > 1 or CALL.search(e)]
+            if not neg and CALL.search(expr):
+                for c, d, e, f in top_terms(expr):
+                    term = expr[e:f]
+                    if not CALL.search(term) and not re.fullmatch(OPERAND, term) \
+                            and not re.fullmatch(r"\(?\s*-?\s*\d+\s*\)?", term):
+                        groups.setdefault(term, []).append((i, a + c, a + d, False))
+                        terms.add(term)
+    cands = [(e, occ) for e, occ in groups.items() if len(occ) > 1 or CALL.search(e) or e in terms]
     if not cands:
         return None
     expr, occ = rng.choice(cands)
