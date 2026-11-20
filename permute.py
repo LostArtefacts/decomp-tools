@@ -1308,6 +1308,38 @@ def store_run_permute(body, rng):
     return "\n".join(lines)
 
 
+def zero_memset(body, rng):
+    """Turns two to four consecutive `L = 0;` stores to fields of one base
+    (a run of store_runs) into one `memset(&L1, 0, sizeof(L1) + ...);`.
+    c2 expands a constant memset late: its stores share one alias tag, so
+    the first gets a memory edge to the next, which moves the stores (and
+    a pending `add esp`) in the schedule. The result only means the same
+    when the fields are adjacent; a byte match proves it."""
+    lines = body.split("\n")
+    cands = []
+    for a, b in store_runs(body):
+        i = a
+        while i <= b:
+            j = i
+            while j <= b and STORE.match(lines[j])[3].strip() == "0":
+                j += 1
+            if j - i >= 2:
+                cands.append((i, j))
+            i = j + 1
+    if not cands:
+        return None
+    i, j = rng.choice(cands)
+    n = rng.randint(2, min(4, j - i))
+    k = rng.randint(i, j - n)
+    run = [STORE.match(lines[x]) for x in range(k, k + n)]
+    first = run[0][2]
+    m = re.match(r"^\*\s*\([^()]*\*\s*\)\s*&(.+)$", first)
+    addr = "&" + m[1] if m else "&" + first
+    size = " + ".join(f"sizeof({r[2]})" for r in run)
+    lines[k:k + n] = [f"{run[0][1]}memset({addr}, 0, {size});"]
+    return "\n".join(lines)
+
+
 def store_orders(body, limit):
     """Every order of each run of store_runs, up to `limit` a run."""
     import itertools
@@ -1676,7 +1708,8 @@ def classify(old, new):
                           ("loop_form", r"\b(?:for|while) \("), ("address_form", r"&\w+\["),
                           ("inline_return", r"\breturn\b"), ("default_case", r"default:"),
                           ("flip_if", r"\belse\b"), ("v1_split", r"\bcontinue;"),
-                          ("arm_returns", r"\breturn\b"), ("select_form", r"\bif \(")):
+                          ("arm_returns", r"\breturn\b"), ("select_form", r"\bif \("),
+                          ("zero_memset", r"\bmemset\(")):
             if len(re.findall(pat, text_gone)) != len(re.findall(pat, text_came)):
                 kinds.add(kind)
     if set(a) == set(b) and a != b and not kinds:
@@ -1714,7 +1747,7 @@ def weight(stats, kind):
 SWEEP_FORMS = ["condition_form", "increment_form", "ternary_form", "address_form", "compound", "inline_return",
                "flip_if", "swap_logical", "default_case", "loop_form", "move_statement", "swap_statements",
                "v1_split", "scope_local", "cache_vs_respell", "select_form", "named_temp", "store_run_permute",
-               "hoist_init", "arm_returns"]
+               "hoist_init", "arm_returns", "zero_memset"]
 
 
 def line_of(body, offset):
@@ -1813,7 +1846,8 @@ def sweep(s, best, best_score, args, keep_best):
 MUTATIONS = [swap_operands, swap_operands, reorder_declarations, shuffle_declarations, swap_statements,
              flip_if, swap_logical, compound, inline_return, condition_form, increment_form,
              ternary_form, loop_form, address_form, move_statement, default_case, v1_split, scope_local,
-             cache_vs_respell, select_form, named_temp, store_run_permute, hoist_init, arm_returns]
+             cache_vs_respell, select_form, named_temp, store_run_permute, hoist_init, arm_returns,
+             zero_memset]
 
 
 class Scorer:

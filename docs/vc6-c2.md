@@ -1169,6 +1169,18 @@ around it:
   SphinxControl, SmlscorpControl and MummyControl matched with it.
   When a decompiled call's result is unused, or a lone load seems to
   have no purpose, look for the twin's dead block that fed it.
+- Two zero stores whose order against a pending `add esp` (or another
+  filler) retail splits, as in `mov [eax],ecx; add esp,4;
+  mov [eax+4],ecx`, were one constant memset. c2 expands
+  `memset(p, 0, 8)` into plain dword stores late, but both carry one
+  alias tag, so the first gets a memory edge (latency 1) to the second:
+  its height rises above the call cleanup's and the second's falls
+  below it. Separate field stores, even through `*(sint32 *)&`, get a
+  tag each and no edge. InitialiseJeep and InitialiseBike matched with
+  `memset(jeep, 0, 8);` for the four wheel rotations (the zero then
+  shares ecx with the other zero stores; with the store order of the
+  legacy source). permute's `zero_memset` tries it on runs of zero
+  stores.
 - A trailing shared `return 1;` after an if/else and a `return 1;` at the
   end of each arm lay out differently: CheckSenetWinner's retail order
   (arm 1, its `return 0` block, arm 2) needed a return in each arm and
